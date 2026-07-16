@@ -48,7 +48,7 @@ EXPERIMENTS=(
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 
-TRACES_RUN="${TRACES_RUN:-default}"     # override: TRACES_RUN=v2 sbatch ...
+TRACES_RUN="${TRACES_RUN:-label-default}"  # H100 teacher traces: TRACES_RUN=default sbatch ...
 
 IDX=${SLURM_ARRAY_TASK_ID:-0}
 IFS='|' read -r STAGE SFT_CFG SFT_RUN GRPO_CFG GRPO_RUN EXTRA <<< "${EXPERIMENTS[$IDX]}"

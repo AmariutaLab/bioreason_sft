@@ -1,15 +1,15 @@
 # =============================================================================
 # bioreason_sft — Track C: reasoning distillation -> GRPO
 #
-#   pixi install                 # solve + install everything (once)
-#   pixi run check-gpu           # verify CUDA/torch/bitsandbytes on a GPU node
+#   pixi install                 # solve + install the V100/default env
+#   pixi run check-gpu-v100      # verify CUDA/torch on a V100 node
+#   pixi run -e h100 check-gpu-h100  # later: verify Unsloth/bnb on H100
 #   pixi run pipeline-smoke      # data -> grounding -> 30 traces
 #   pixi shell                   # drop into the env
 #
 # Why pixi here: this stack breaks at the conda/PyPI boundary (torch CUDA build
-# vs bitsandbytes vs unsloth). pixi locks BOTH sides in one pixi.lock, so the
-# login node (trace generation) and the H100 compute nodes cannot silently
-# diverge — which is the failure mode that wastes a night of GPU time.
+# vs optional bitsandbytes/Unsloth). Pixi locks BOTH sides in one pixi.lock, so
+# login-node prep and GPU training cannot silently diverge.
 # =============================================================================
 
 [workspace]
@@ -17,15 +17,11 @@ name = "bioreason_sft"
 version = "0.1.0"
 description = "CRISPRi perturbation prediction: reasoning distillation + GRPO"
 channels = ["conda-forge"]
-platforms = ["linux-64"]
+platforms = [{ platform = "linux-64", cuda = "12.4" }]
 
-# H100 = sm_90, needs CUDA 12.x. Pixi uses this to solve for GPU-capable builds
-# and to refuse to install on a machine that can't run them.
-# NOTE: compute capability >= 7.5 required (T4/A100/H100). P100 (CC 6.0) will
-# NOT work: bitsandbytes 4-bit needs Turing+, unsloth needs Volta+.
-[system-requirements]
-cuda = "12.4"
-
+# The default env is V100-compatible: standard Torch + Transformers + PEFT.
+# The optional h100 env adds Unsloth/bitsandbytes and should be used only on
+# newer GPUs after NAIRR/H100 access is available.
 # torch CUDA wheels do not live on PyPI proper.
 [pypi-options]
 extra-index-urls = ["https://download.pytorch.org/whl/cu124"]
@@ -51,21 +47,16 @@ tqdm = ">=4.66"
 git = "*"                     # some pip installs need it
 
 
-# ── PyPI side: the ML stack ─────────────────────────────────────────────────
-# Deliberately NOT from conda-forge: unsloth/bitsandbytes/trl ship PyPI-first and
-# the conda builds lag. Mixing conda-torch with pip-unsloth is the classic way to
-# get a silently broken bitsandbytes.
+# ── PyPI side: the base ML stack ────────────────────────────────────────────
+# Keep the default env compatible with Expanse V100. H100-only accelerators live
+# in feature.h100 below.
 [pypi-dependencies]
 torch = ">=2.5,<2.9"          # cu124 wheels via the extra index above
-# unsloth pins its own transformers/peft/accelerate range — let it drive, and do
-# NOT pin transformers here or you will fight its resolver.
-unsloth = ">=2025.1"
-unsloth_zoo = ">=2025.1"
+transformers = ">=4.51"
 trl = ">=0.12"                # SFTTrainer + GRPOTrainer
 peft = ">=0.13"               # LoRA / PeftModel.from_pretrained
 datasets = ">=3.0"
 accelerate = ">=1.0"
-bitsandbytes = ">=0.44"       # 4-bit NF4 (QLoRA) + adamw_8bit
 sentencepiece = "*"           # Gemma tokenizer
 protobuf = "*"                # ditto
 huggingface-hub = ">=0.26"
@@ -110,6 +101,13 @@ wandb = ">=0.18"
 ipython = "*"
 ruff = "*"
 
+[feature.h100.pypi-dependencies]
+# H100/NAIRR path. Do not use this env on Expanse V100: bitsandbytes 4-bit needs
+# Turing+ and Unsloth kernels are not the right target for sm_70.
+unsloth = ">=2025.1"
+unsloth_zoo = ">=2025.1"
+bitsandbytes = ">=0.44"
+
 # Optional decoupler path for grounding. Kept in its OWN solve group so its numba
 # constraint can never drag the training env backwards. CPU-only, login node.
 [feature.grounding-decoupler.dependencies]
@@ -119,10 +117,12 @@ decoupler = ">=1.8"
 omnipath = ">=1.0"
 
 [environments]
-default = { solve-group = "main" }
+default = { solve-group = "v100" }
+v100    = { solve-group = "v100" }
 nb      = { features = ["nb"], solve-group = "main" }
 wandb   = { features = ["wandb"], solve-group = "main" }
 full    = { features = ["nb", "wandb", "dev"], solve-group = "main" }
+h100    = { features = ["h100"], solve-group = "h100" }
 # separate solve group on purpose — see the comment above
 grounding-decoupler = { features = ["grounding-decoupler"] }
 
@@ -134,7 +134,24 @@ grounding-decoupler = { features = ["grounding-decoupler"] }
 # -- diagnostics -------------------------------------------------------------
 paths = { cmd = "python paths.py", description = "show layout + existing runs" }
 
-check-gpu = { cmd = """
+check-gpu-v100 = { cmd = """
+python -c "
+import torch, sys
+print('torch     ', torch.__version__)
+print('cuda avail', torch.cuda.is_available())
+if not torch.cuda.is_available(): sys.exit('NO GPU VISIBLE')
+cc = torch.cuda.get_device_capability(0)
+print('device    ', torch.cuda.get_device_name(0), f'(sm_{cc[0]}{cc[1]})')
+print('bf16      ', torch.cuda.is_bf16_supported())
+if cc[0]*10+cc[1] < 70:
+    sys.exit('FATAL: compute capability <7.0')
+import transformers, peft, trl
+print('transformers', transformers.__version__)
+print('OK')
+"
+""", description = "verify CUDA + Torch + Transformers on V100/default env" }
+
+check-gpu-h100 = { cmd = """
 python -c "
 import torch, sys
 print('torch     ', torch.__version__)
@@ -145,12 +162,12 @@ print('device    ', torch.cuda.get_device_name(0), f'(sm_{cc[0]}{cc[1]})')
 print('bf16      ', torch.cuda.is_bf16_supported())
 if cc[0]*10+cc[1] < 75:
     sys.exit('FATAL: compute capability <7.5 — bitsandbytes 4-bit needs Turing+, '
-             'unsloth needs Volta+. P100 will not work; use T4/A100/H100.')
+             'Unsloth needs newer kernels. Use H100/A100/T4, not V100.')
 import bitsandbytes, unsloth
 print('bitsandbytes', bitsandbytes.__version__)
 print('OK')
 "
-""", description = "verify CUDA + compute capability + bitsandbytes (run on a GPU node)" }
+""", description = "verify CUDA + compute capability + bitsandbytes/Unsloth on H100 env" }
 
 # -- stage 0-2: CPU + internet, run on the login node ------------------------
 data = { cmd = "python download_data.py", description = "download Kaggle data -> ../data" }
@@ -162,11 +179,11 @@ traces-smoke = { cmd = "python build_traces.py --out smoke --config smoke", depe
 traces = { cmd = "python build_traces.py --out default --config default", depends-on = ["grounding"], description = "full trace generation (~1-3h, resumable)" }
 
 # -- stage 3-4: GPU ----------------------------------------------------------
-sft = { cmd = "python train_sft_distill.py --config h100_8b --traces default --out qwen8b", description = "QLoRA + reasoning distillation (Qwen3-8B)" }
+sft-v100 = { cmd = "python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100", description = "V100 baseline SFT with fallback traces" }
+
+sft = { cmd = "python train_sft_distill.py --config h100_8b --traces default --out qwen8b", description = "H100/NAIRR SFT path after access is available" }
 
 sft-resume = { cmd = "python train_sft_distill.py --config h100_8b --traces default --out qwen8b --resume", description = "resume the qwen8b SFT run at its exact step" }
-
-sft-gemma = { cmd = "python train_sft_distill.py --config gemma4_e4b --traces default --out gemma4b", description = "base-model A/B: Gemma 4 E4B" }
 
 sft-control = { cmd = "python train_sft_distill.py --config label_only_ablation --traces default --out abl-labelonly", description = "SynthPert control: label-only SFT (no traces)" }
 
@@ -195,4 +212,6 @@ for s, stage, run, src in sorted(rows, reverse=True):
 "
 """, description = "leaderboard of all local runs by blocked-val score" }
 
-submit = { cmd = "sbatch slurm/run_experiment.sbatch", description = "launch the SLURM experiment array" }
+label-traces = { cmd = "python build_label_traces.py --out label-default --config v100_4b", description = "deterministic fallback traces from blocked train labels" }
+
+submit = { cmd = "sbatch run_experiment.sbatch", description = "launch the SLURM experiment array" }

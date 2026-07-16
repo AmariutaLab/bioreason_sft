@@ -1,0 +1,4 @@
+extends: default
+
+ablation:
+  empty_reasoning: true

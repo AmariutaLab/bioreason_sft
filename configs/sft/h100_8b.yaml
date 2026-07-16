@@ -1,0 +1,10 @@
+extends: default
+
+model:
+  load_in_4bit: false
+
+train:
+  batch: 2
+  grad_accum: 8
+  optim: adamw_torch
+  bf16: true

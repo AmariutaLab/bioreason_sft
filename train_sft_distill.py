@@ -20,12 +20,11 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset
-from unsloth import FastLanguageModel
-from unsloth.chat_templates import train_on_responses_only
 from trl import SFTTrainer, SFTConfig
 
 import common
 import config as cfgmod
+import modeling
 import paths
 from task import Task
 
@@ -111,15 +110,8 @@ def main():
 
     # ── model ───────────────────────────────────────────────────────────────
     m = cfg.model
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=m.name, max_seq_length=m.max_seq_length,
-        load_in_4bit=m.load_in_4bit, dtype=None)
-    model = FastLanguageModel.get_peft_model(
-        model, r=cfg.lora.r, lora_alpha=cfg.lora.alpha,
-        lora_dropout=cfg.lora.dropout, target_modules=list(cfg.lora.target_modules),
-        use_gradient_checkpointing="unsloth", random_state=cfg.split.seed)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+    model, tokenizer, backend = modeling.load_model_and_tokenizer(m)
+    model = modeling.add_lora(model, cfg.lora, cfg.split.seed, backend)
     letter_ids = task.resolve_letter_ids(tokenizer)
 
     # ── dataset ─────────────────────────────────────────────────────────────
@@ -168,9 +160,8 @@ def main():
             report_to="wandb" if run_id else "none"),
     )
     # loss only on the assistant turn (trace + answer), not the long prompt
-    trainer = train_on_responses_only(trainer,
-                                      instruction_part=m.instruction_part,
-                                      response_part=m.response_part)
+    trainer = modeling.responses_only_trainer(
+        trainer, instruction_part=m.instruction_part, response_part=m.response_part)
     trainer.train(resume_from_checkpoint=str(ckpt) if ckpt else None)
 
     adapter = paths.sft_adapter(args.out)
@@ -179,9 +170,9 @@ def main():
     print(f"\nAdapter -> {adapter}")
 
     metrics = {"traces_run": traces_run, "n_traces": len(tdf), "steps": steps,
-               "ablation_empty_reasoning": empty}
+               "ablation_empty_reasoning": empty, "model_backend": backend}
     if cfg.eval.enabled:
-        FastLanguageModel.for_inference(model)
+        modeling.prepare_for_inference(model, backend)
         model.eval()
         print("\nScoring blocked val (generate reasoning -> read letter logits) ...")
         vl, vtr = score_rows(model, tokenizer, task, va, letter_ids,

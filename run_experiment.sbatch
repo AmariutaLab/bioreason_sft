@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Run one or more Track C experiments on H100s via a SLURM array.
+# Run one or more Track C experiments on Expanse GPUs via a SLURM array.
 #
 #   sbatch slurm/run_experiment.sbatch                 # runs the whole EXPERIMENTS list
 #   sbatch --array=0 slurm/run_experiment.sbatch       # just the first one
@@ -15,14 +15,16 @@
 #   TEACHER_API_KEY=... python build_traces.py --out default
 # =============================================================================
 #SBATCH --job-name=bioreason
-#SBATCH --partition=gpu                 # <-- CHANGE to your H100 partition
-#SBATCH --gres=gpu:h100:1
+#SBATCH --partition=gpu-shared
+#SBATCH --gpus=1
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=12:00:00
 #SBATCH --output=../output/slurm/%x-%A_%a.out
 #SBATCH --error=../output/slurm/%x-%A_%a.err
-#SBATCH --array=0-2                     # index into EXPERIMENTS below
+#SBATCH --array=0-0                     # index into EXPERIMENTS below
 
 set -euo pipefail
 
@@ -32,8 +34,9 @@ set -euo pipefail
 #   EXTRA       : optional "--set key=val" overrides, space separated
 # Edit this list; do NOT edit the python source to change an experiment.
 EXPERIMENTS=(
-  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
+  "sft|v100_4b|qwen4b-v100||| "
   "sft|label_only_ablation|abl-labelonly||| "
+  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 
@@ -57,9 +60,10 @@ cd "$SLURM_SUBMIT_DIR"
 mkdir -p ../output/slurm
 
 # CHANGE these to match your cluster
-module load cuda/12.4 || true
+module load gpu/0.17.3b || true
+module load cuda/12.6.3 || module load cuda/11.8.0 || true
 source ~/miniconda3/etc/profile.d/conda.sh
-conda activate bioreason
+conda activate "${BIOREASON_ENV_PREFIX:-/expanse/lustre/projects/ddp412/zxu6/mlgenx/envs/bioreason-gpu}"
 
 export MLGENX_ROOT="$(cd .. && pwd)"
 export TOKENIZERS_PARALLELISM=false

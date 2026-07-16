@@ -1,0 +1,34 @@
+prompts: teacher/default
+grounding_run: default
+workers: 6
+
+teacher:
+  api_key_env: TEACHER_API_KEY
+  base_url: https://api.openai.com/v1
+  model: o4-mini
+  temperature: 0.6
+  max_tokens: 650
+  timeout: 180
+  max_retries: 3
+
+critic:
+  enabled: true
+  model: null
+  base_url: null
+  temperature: 0.0
+  max_tokens: 220
+  min_score: 4
+
+filters:
+  leak_filter: true
+  min_chars: 160
+
+sampling:
+  n: 1500
+  seed: 42
+  balance_classes: true
+
+split:
+  seed: 42
+  val_pert_frac: 0.20
+  val_gene_frac: 0.25

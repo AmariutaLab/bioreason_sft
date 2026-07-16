@@ -1,0 +1,28 @@
+name: bioreason
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - accelerate
+  - datasets
+  - decoupler
+  - ipykernel
+  - kaggle
+  - kagglehub
+  - matplotlib
+  - numpy
+  - pandas
+  - peft
+  - pyyaml
+  - pytorch::pytorch
+  - pytorch::pytorch-cuda=12.4
+  - requests
+  - scikit-learn
+  - scipy
+  - tqdm
+  - transformers
+  - trl
+  - wandb

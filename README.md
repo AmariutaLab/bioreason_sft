@@ -10,7 +10,7 @@ mlgenx/
 ├── bioreason_sft/              # code + configs + prompts (this dir)
 │   ├── configs/<stage>/*.yaml  # what to run
 │   ├── prompts/<kind>/*.yaml   # all prompt text
-│   ├── slurm/run_experiment.sbatch
+│   ├── run_experiment.sbatch
 │   └── pipeline.ipynb          # notebook version of the CLI
 ├── data/                       # train.csv, test.csv
 └── output/
@@ -23,17 +23,57 @@ mlgenx/
 **Artifacts are addressed by run name, never by path**: `--traces v2` reads
 `output/traces/v2/traces.jsonl`; `--out qwen8b` writes `output/sft/qwen8b/`.
 
+Keep `data/` and `output/` outside the Git repo. They are local Kaggle data and
+generated artifacts, not source files.
+
 ## Install
 
 ```bash
-conda create -n bioreason python=3.11 -y && conda activate bioreason
-pip install "unsloth[cu124-torch260]" "trl>=0.9" datasets scikit-learn \
-            decoupler requests pyyaml kaggle pandas matplotlib
-# optional: pip install wandb
+conda env create -f environment.yml
+conda activate bioreason
+python -m ipykernel install --user --name bioreason --display-name "bioreason"
 ```
 
-Requires compute capability ≥ 7.5 (T4 / A100 / H100). **P100 will not work** —
-bitsandbytes 4-bit needs Turing+, unsloth needs Volta+.
+For this Expanse workspace, a validated CPU/code-check Conda env is available at:
+
+```bash
+conda activate /expanse/lustre/projects/ddp412/zxu6/mlgenx/envs/bioreason
+```
+
+For GPU training, verify the active env on a GPU node before submitting long jobs:
+
+```bash
+python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
+```
+
+The default Conda path uses standard Transformers + PEFT fp16 LoRA, so Expanse
+V100 GPUs are usable with the smaller `v100_4b` config. 4-bit / Unsloth variants
+are optional and may need newer GPUs or non-Conda packages.
+
+If Conda solving is slow, use `mamba env create -f environment.yml` with the same
+file. Keep package changes in `environment.yml` so notebooks, login-node data
+prep, and SLURM jobs use the same environment.
+
+On Expanse, if Conda reports `CondaVerificationError` for packages under
+`~/miniconda3/pkgs`, use a fresh package cache on scratch instead of the default
+cache:
+
+```bash
+SCRATCH_ROOT=${SCRATCH:-/scratch/$USER/job_${SLURM_JOB_ID}}
+mkdir -p "$SCRATCH_ROOT/conda_pkgs" "$SCRATCH_ROOT/envs"
+CONDA_PKGS_DIRS="$SCRATCH_ROOT/conda_pkgs" conda env create \
+  -p "$SCRATCH_ROOT/envs/bioreason" \
+  -f environment.yml
+conda activate "$SCRATCH_ROOT/envs/bioreason"
+```
+
+On Expanse, the automated setup path is:
+
+```bash
+sbatch -A csd832 -p compute -t 04:00:00 -N 1 -n 1 -c 4 --mem=32G scripts/setup_env.sbatch
+sbatch -A csd832 -p gpu-debug --gpus=1 -N 1 -n 1 -c 4 --mem=32G \
+  --dependency=afterok:<setup_job_id> scripts/gpu_smoke.sbatch
+```
 
 ## The config system
 
@@ -119,11 +159,18 @@ python build_traces.py --out smoke --config smoke
 #    then READ the traces (see "Trace QA" below) before spending on:
 python build_traces.py --out default --config default
 
+# fallback if no teacher key yet: deterministic blocked-train label traces
+python build_label_traces.py --out label-default --config v100_4b
+
 # 3. SFT (GPU, ~1-2 h)
-python train_sft_distill.py --config h100_8b --traces default --out qwen8b
+python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100
 
 # 4. GRPO (GPU, several h)
 python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo
+
+# 5. submission
+python make_submission.py --stage sft --run qwen8b
+python validate_submission.py ../output/submissions/sft-qwen8b.zip
 ```
 
 ### Resume
@@ -145,21 +192,22 @@ wandb (`--set wandb.enabled=true`) is for configs and curves, **not** resume.
 
 ## SLURM
 
-Edit the `EXPERIMENTS` array in `slurm/run_experiment.sbatch` — one line per
+Edit the `EXPERIMENTS` array in `run_experiment.sbatch` — one line per
 experiment, `"STAGE|SFT_CONFIG|SFT_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"`:
 
 ```bash
 EXPERIMENTS=(
-  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
+  "sft|v100_4b|qwen4b-v100||| "
   "sft|label_only_ablation|abl-labelonly||| "
+  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 ```
 
 ```bash
-sbatch slurm/run_experiment.sbatch              # all of them, in parallel
-sbatch --array=0 slurm/run_experiment.sbatch    # just the first
-TRACES_RUN=v2 sbatch slurm/run_experiment.sbatch
+sbatch -A csd832 run_experiment.sbatch              # default array runs the first V100 SFT
+sbatch -A csd832 --array=1 run_experiment.sbatch    # run one other experiment
+sbatch -A csd832 --export=ALL,TRACES_RUN=v2 run_experiment.sbatch
 ```
 
 Run the CPU stages (download / grounding / traces) once on the login node first —

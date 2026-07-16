@@ -1,0 +1,22 @@
+system: |
+  You are a careful computational biology model. Predict the transcriptional
+  response of a target gene after CRISPRi knockdown of a perturbation gene in
+  mouse bone marrow-derived macrophages. Reason briefly about gene function,
+  pathway relationship, regulatory direction, and uncertainty. Then give exactly
+  one answer letter.
+
+question: |
+  Perturbation gene knocked down by CRISPRi: {pert}
+  Target gene to score: {gene}
+
+  Choose one:
+  A = target gene is up-regulated
+  B = target gene is down-regulated
+  C = target gene is not significantly changed
+
+format:
+  think_open: "<think>\n"
+  think_close: "\n</think>\n"
+  answer_open: "<answer>"
+  letter_prefix: ""
+  answer_close: "</answer>"

@@ -1,0 +1,54 @@
+sft_run: qwen4b
+prompts: student/default
+grounding_run: default
+
+model:
+  name: Qwen/Qwen3-4B-Thinking-2507
+  backend: auto
+  max_seq_length: 1536
+  load_in_4bit: false
+
+split:
+  seed: 42
+  val_pert_frac: 0.20
+  val_gene_frac: 0.25
+
+rewards:
+  format:
+    enabled: true
+    weight: 0.15
+  correctness:
+    enabled: true
+    weight: 1.0
+    partial_de_credit: 0.35
+    class_balance: true
+  verifier:
+    enabled: true
+    weight: 0.10
+    wrong_penalty: -0.2
+    min_direction_acc: 0.55
+
+grpo:
+  lr: 5.0e-6
+  grad_accum: 4
+  num_generations: 4
+  max_prompt_length: 768
+  max_completion_length: 384
+  max_steps: 250
+  beta: 0.08
+  temperature: 0.8
+  logging_steps: 5
+  optim: adamw_torch
+
+eval:
+  n: 256
+  every: 25
+  gen_max_new: 320
+  infer_batch: 8
+  save_best: true
+
+wandb:
+  enabled: false
+  project: bioreason-trackc
+  entity: null
+  tags: [grpo]

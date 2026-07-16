@@ -22,11 +22,11 @@ import pandas as pd
 import torch
 from datasets import Dataset
 from transformers import TrainerCallback
-from unsloth import FastLanguageModel
 from trl import GRPOTrainer, GRPOConfig
 
 import common
 import config as cfgmod
+import modeling
 import paths
 from task import Task, LABEL2LETTER
 
@@ -208,13 +208,9 @@ def main():
 
     # ── model: base + SFT adapter ───────────────────────────────────────────
     m = cfg.model
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=m.name, max_seq_length=m.max_seq_length,
-        load_in_4bit=m.load_in_4bit, dtype=None)
+    model, tokenizer, backend = modeling.load_model_and_tokenizer(m)
     from peft import PeftModel
     model = PeftModel.from_pretrained(model, str(adapter), is_trainable=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
     letter_ids = task.resolve_letter_ids(tokenizer)
     print(f"Warm-started from {adapter}")
 
@@ -280,7 +276,7 @@ def main():
             temperature=g.temperature,
             logging_steps=g.logging_steps,
             save_strategy="no",          # the callback saves the best by val AUROC
-            optim="adamw_8bit", bf16=bf16, fp16=not bf16,
+            optim=g.get("optim", "adamw_torch"), bf16=bf16, fp16=not bf16,
             report_to="wandb" if run_id else "none", seed=cfg.split.seed),
         callbacks=[cb])
     trainer.train()
@@ -289,7 +285,8 @@ def main():
     tokenizer.save_pretrained(str(out_dir / "adapter"))
     metrics = {"sft_run": sft_run, "best_blocked_val": cb.best,
                "history": cb.history, "verifier_direction_acc": verif_acc,
-               "rewards": [f.__name__ for f in rewards]}
+               "rewards": [f.__name__ for f in rewards],
+               "model_backend": backend}
     (out_dir / "metrics.json").write_text(json.dumps(metrics, indent=2))
     cfgmod.snapshot(cfg, out_dir, {"run": args.out, "metrics": metrics,
                                    "wandb_id": run_id})

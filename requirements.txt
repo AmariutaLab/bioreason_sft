@@ -1,3 +1,0 @@
-# This cluster should use Conda for environment management.
-# Install with:
-#   conda env create -f environment.yml

@@ -9,6 +9,7 @@ sources:
     max_go_terms: 8
   collectri:
     enabled: true
+    method: http
 
 context:
   include_summary: true

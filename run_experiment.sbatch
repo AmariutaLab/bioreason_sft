@@ -1,29 +1,33 @@
 #!/bin/bash
 # =============================================================================
-# Run one or more Track C experiments on Expanse GPUs via a SLURM array.
+# Run one or more Track C experiments via a SLURM array.
 #
-#   sbatch slurm/run_experiment.sbatch                 # runs the whole EXPERIMENTS list
-#   sbatch --array=0 slurm/run_experiment.sbatch       # just the first one
-#   sbatch --array=1-2 slurm/run_experiment.sbatch     # a subset
+#   sbatch run_experiment.sbatch                 # default V100 baseline
+#   sbatch --array=1 run_experiment.sbatch       # one other experiment
 #
 # Each array task = one independent experiment (its own configs + run names), so
 # ablations run in parallel rather than serially.
 #
-# CPU-only prerequisites (run ONCE on the login node, they need internet, not GPU):
-#   python download_data.py
-#   python build_grounding.py --out default
-#   TEACHER_API_KEY=... python build_traces.py --out default
+# CPU-only prerequisites (run ONCE on the login node — they need internet, not GPU):
+#   pixi install
+#   pixi run data
+#   pixi run grounding
+#   TEACHER_API_KEY=... pixi run traces-smoke     # then READ the traces
+#   TEACHER_API_KEY=... pixi run traces
 # =============================================================================
 #SBATCH --job-name=bioreason
+#SBATCH --account=csd832
 #SBATCH --partition=gpu-shared
 #SBATCH --gpus=1
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
-#SBATCH --time=12:00:00
+#SBATCH --mem=90G
+#SBATCH -t 12:00:00
 #SBATCH --output=../output/slurm/%x-%A_%a.out
 #SBATCH --error=../output/slurm/%x-%A_%a.err
+#SBATCH --no-requeue
 #SBATCH --array=0-0                     # index into EXPERIMENTS below
 
 set -euo pipefail
@@ -34,8 +38,12 @@ set -euo pipefail
 #   EXTRA       : optional "--set key=val" overrides, space separated
 # Edit this list; do NOT edit the python source to change an experiment.
 EXPERIMENTS=(
+  # V100 path available now under csd832.
   "sft|v100_4b|qwen4b-v100||| "
   "sft|label_only_ablation|abl-labelonly||| "
+  # H100 path for later NAIRR access. Submit with:
+  #   sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 \
+  #     --array=2-3 --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100,TRACES_RUN=default run_experiment.sbatch
   "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
@@ -59,18 +67,25 @@ echo "=================================================="
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p ../output/slurm
 
-# CHANGE these to match your cluster
+# CHANGE to match your cluster. PyTorch wheels carry most CUDA runtime pieces;
+# the module mainly provides driver-side tools and a sane CUDA_HOME.
 module load gpu/0.17.3b || true
 module load cuda/12.6.3 || module load cuda/11.8.0 || true
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate "${BIOREASON_ENV_PREFIX:-/expanse/lustre/projects/ddp412/zxu6/mlgenx/envs/bioreason-gpu}"
 
-export MLGENX_ROOT="$(cd .. && pwd)"
-export TOKENIZERS_PARALLELISM=false
-export HF_HOME="${HF_HOME:-$MLGENX_ROOT/.hf_cache}"     # keep HF cache off $HOME
-# export WANDB_API_KEY=...   # or add --set wandb.enabled=true and log in first
+# pixi provides the env. `pixi shell-hook` activates it into THIS shell, so the
+# srun'd python below is the project interpreter — no conda, no PATH surprises,
+# and the exact same pixi.lock the login node used for trace generation.
+export PIXI_HOME="${PIXI_HOME:-$HOME/.pixi}"
+export PATH="$PIXI_HOME/bin:$PATH"
+PIXI_ENV="${PIXI_ENV:-default}"
+CHECK_TASK="${CHECK_TASK:-check-gpu-v100}"
+eval "$(pixi shell-hook -e "$PIXI_ENV")"
 
-python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# pixi's [activation.env] already sets TOKENIZERS_PARALLELISM and HF_HOME.
+# For wandb use: -e wandb, and export WANDB_API_KEY (or add it as a cluster secret).
+# eval "$(pixi shell-hook -e wandb)"
+
+pixi run -e "$PIXI_ENV" "$CHECK_TASK"
 
 # ── run ──────────────────────────────────────────────────────────────────────
 # --resume is safe on a fresh run (no checkpoint -> starts from scratch), so

@@ -26,54 +26,56 @@ mlgenx/
 Keep `data/` and `output/` outside the Git repo. They are local Kaggle data and
 generated artifacts, not source files.
 
-## Install
+## Install (pixi)
 
 ```bash
-conda env create -f environment.yml
-conda activate bioreason
-python -m ipykernel install --user --name bioreason --display-name "bioreason"
+cd bioreason_sft
+pixi install                 # default env: V100-compatible Torch/PEFT path
+pixi run check-gpu-v100      # run this ON A V100 GPU NODE
 ```
 
-For this Expanse workspace, a validated CPU/code-check Conda env is available at:
+`pixi.lock` pins **both** the conda and PyPI sides, which matters because this
+stack breaks exactly at that boundary. The default env is intentionally
+V100-compatible for `csd832`; the optional `h100` env adds Unsloth/bitsandbytes
+for later NAIRR/H100 access.
+
+Environments: `default`/`v100` (CLI), `h100` (+Unsloth/bitsandbytes), `nb`
+(+jupyter), `wandb` (+logging), `full` (all).
 
 ```bash
-conda activate /expanse/lustre/projects/ddp412/zxu6/mlgenx/envs/bioreason
+pixi run -e nb notebook          # jupyter lab pipeline.ipynb
+pixi run -e h100 check-gpu-h100  # later, on H100/NAIRR only
+pixi shell                       # drop into the env
 ```
 
-For GPU training, verify the active env on a GPU node before submitting long jobs:
+The V100 path uses standard Transformers + PEFT fp16 LoRA. The H100 path can use
+4-bit/Unsloth accelerators, but that should wait until the `sdp147`/NAIRR access
+issue is resolved.
 
-```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available(), torch.version.cuda)"
-```
+### Tasks
 
-The default Conda path uses standard Transformers + PEFT fp16 LoRA, so Expanse
-V100 GPUs are usable with the smaller `v100_4b` config. 4-bit / Unsloth variants
-are optional and may need newer GPUs or non-Conda packages.
+`pixi task list` shows them all. The pipeline, in order:
 
-If Conda solving is slow, use `mamba env create -f environment.yml` with the same
-file. Keep package changes in `environment.yml` so notebooks, login-node data
-prep, and SLURM jobs use the same environment.
+| Task | Where | What |
+| --- | --- | --- |
+| `pixi run data` | login node | download Kaggle data → `../data` |
+| `pixi run grounding` | login node | mygene + CollecTRI → `../output/grounding/default` |
+| `pixi run traces-smoke` | login node | 30 traces — **run this and read them first** |
+| `pixi run traces` | login node | full generation (~1–3 h, resumable) |
+| `pixi run label-traces` | anywhere | deterministic blocked-train fallback traces |
+| `pixi run sft-v100` | **V100 GPU** | practical 4B baseline with fallback traces |
+| `pixi run -e h100 sft` | **H100 GPU** | later H100/NAIRR path |
+| `pixi run sft-control` | **GPU** | the label-only control |
+| `pixi run grpo` | **GPU** | RL on top of the SFT adapter |
+| `pixi run results` | anywhere | leaderboard of all local runs |
+| `pixi run submit` | login node | `sbatch` the experiment array |
 
-On Expanse, if Conda reports `CondaVerificationError` for packages under
-`~/miniconda3/pkgs`, use a fresh package cache on scratch instead of the default
-cache:
+Tasks declare dependencies (`traces` → `grounding` → `data`), so `pixi run
+traces-smoke` on a clean checkout does the whole cheap chain. `pixi run
+pipeline-smoke` is that chain explicitly.
 
-```bash
-SCRATCH_ROOT=${SCRATCH:-/scratch/$USER/job_${SLURM_JOB_ID}}
-mkdir -p "$SCRATCH_ROOT/conda_pkgs" "$SCRATCH_ROOT/envs"
-CONDA_PKGS_DIRS="$SCRATCH_ROOT/conda_pkgs" conda env create \
-  -p "$SCRATCH_ROOT/envs/bioreason" \
-  -f environment.yml
-conda activate "$SCRATCH_ROOT/envs/bioreason"
-```
-
-On Expanse, the automated setup path is:
-
-```bash
-sbatch -A csd832 -p compute -t 04:00:00 -N 1 -n 1 -c 4 --mem=32G scripts/setup_env.sbatch
-sbatch -A csd832 -p gpu-debug --gpus=1 -N 1 -n 1 -c 4 --mem=32G \
-  --dependency=afterok:<setup_job_id> scripts/gpu_smoke.sbatch
-```
+Tasks are convenience wrappers for the common case — for anything custom, call
+the scripts directly with `--config` / `--set` (see below).
 
 ## The config system
 
@@ -114,6 +116,37 @@ the snapshot won't.
 
 To try a new teacher prompt: copy `prompts/teacher/default.yaml` →
 `terse.yaml`, edit, then `--set prompts=teacher/terse`. No code touched.
+
+## Choosing a base model
+
+Track C caps the student at **<10B parameters**. Practical configs currently
+ship for the V100-accessible 4B path and the later H100 path:
+
+```bash
+python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100
+python train_sft_distill.py --config h100_8b --traces default --out qwen8b
+```
+
+| Model | Params | Eligible | Notes |
+| --- | --- | --- | --- |
+| **Qwen3-8B** | 8.2B dense | yes | **default pick.** Most knowledge capacity in budget; mature fine-tuning ecosystem |
+| Qwen3-4B-Thinking | 4B | yes | organizers' baseline; fits a T4 |
+| Gemma 4 E4B | ~4.5B effective (~6B total) | yes | Apache 2.0, native thinking; but *edge* tier (Per-Layer Embeddings) |
+| Gemma 4 E2B | ~2.3B effective | yes | too small for a knowledge-bound task |
+| Gemma 4 26B A4B | 25.2B total / 3.8B active | **probably not** | MoE. "<10B" almost certainly means *total* — ask the organizers before relying on it |
+| Gemma 4 12B / 31B | 12B / 30.7B | no | over the cap |
+
+**Why Qwen3-8B by default:** this task is *knowledge-bound* — the bottleneck is
+knowing what `Sbno2` does in a macrophage, not reasoning capacity. Under the
+superficial-alignment hypothesis the knowledge must already be latent in
+pretraining for traces to activate it, so parameters-for-facts is the thing to
+buy. Gemma's E2B/E4B are built for phones and trade exactly that away.
+
+Gemma A/B configs can be added later, but the immediate goal is to get one
+robust baseline through the full submission pipeline before expanding the sweep.
+
+**Kaggle model mounts are irrelevant here.** They exist for Kaggle notebooks with
+internet off. On SLURM, HF is the same weights by a faster path.
 
 ## Kaggle credentials
 
@@ -169,8 +202,8 @@ python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b
 python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo
 
 # 5. submission
-python make_submission.py --stage sft --run qwen8b
-python validate_submission.py ../output/submissions/sft-qwen8b.zip
+python make_submission.py --stage sft --run qwen4b-v100
+python validate_submission.py ../output/submissions/sft-qwen4b-v100.zip
 ```
 
 ### Resume
@@ -205,14 +238,20 @@ EXPERIMENTS=(
 ```
 
 ```bash
-sbatch -A csd832 run_experiment.sbatch              # default array runs the first V100 SFT
-sbatch -A csd832 --array=1 run_experiment.sbatch    # run one other experiment
-sbatch -A csd832 --export=ALL,TRACES_RUN=v2 run_experiment.sbatch
+sbatch -A csd832 run_experiment.sbatch              # default V100 baseline
+sbatch -A csd832 --array=1 run_experiment.sbatch    # label-only control
+
+# later, after NAIRR access:
+sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 --array=2-3 \
+  --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100,TRACES_RUN=default \
+  run_experiment.sbatch
 ```
 
 Run the CPU stages (download / grounding / traces) once on the login node first —
-they need internet, not a GPU. Update the `module load` / `conda activate` lines
-and `--partition` for your cluster.
+they need internet, not a GPU. The script activates the pixi env via
+`pixi shell-hook` (no conda), so compute nodes get the same `pixi.lock` the login
+node used. Update `--partition`, the `module load cuda` line, and `PIXI_HOME` for
+your cluster. It passes `--resume` unconditionally, so requeued jobs self-heal.
 
 ## Notebook
 
@@ -248,7 +287,19 @@ into weights. The student never sees a database.
 
 **CollecTRI is the highest-value source** because it's *signed*: knock down an
 activator → target down; knock down a repressor → target up. That's DIR-AUROC,
-the metric half even SOTA only reaches ~0.65–0.73 on.
+the metric half even SOTA only reaches ~0.65–0.73 on. We fetch it straight from
+OmniPath's REST API with `requests` rather than via `decoupler` — decoupler
+depends on numba, whose resolver backtracks to numba 0.53.1 (no Python 3.12
+wheel, and its sdist refuses to build: *"only versions >=3.6,<3.10 are
+supported"*). We used decoupler for exactly one download, so we do the download.
+The optional library path still exists: `pixi run -e grounding-decoupler
+grounding` with `--set sources.collectri.method=decoupler`.
+
+Two cleanups happen on the way in: rows with **ambiguous signs** (both or neither
+stimulation/inhibition) are dropped, because an edge without a direction is worse
+than no edge here; and **protein complexes** (`FOS_JUN`, `FOSL1_JUNB`) are split
+into member TFs, since a complex name never matches a single perturbed gene
+symbol and would silently cost coverage.
 
 **Approach 2 (rationalize the known label)** means the teacher's own accuracy
 stops mattering: o4-mini scored ~52% on this task, yet its traces trained an 8B

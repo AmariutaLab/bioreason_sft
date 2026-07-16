@@ -21,9 +21,16 @@ sources:
   #   knock down an ACTIVATOR -> target DOWN
   #   knock down a  REPRESSOR -> target UP
   # That is DIR-AUROC, the metric half even SOTA only reaches ~0.65-0.73 on.
-  # Requires `pip install decoupler`. Low recall by design (high precision).
+  # Low recall by design (high precision).
   collectri:
     enabled: true
+    # http      = fetch from OmniPath's REST API with plain requests (DEFAULT).
+    # decoupler = use the decoupler library if you have it.
+    # We default to http because decoupler drags in numba, whose resolver
+    # backtracks to numba 0.53.1 (no Python 3.12 wheel -> sdist build ->
+    # "only versions >=3.6,<3.10 are supported"). We used decoupler for exactly
+    # one download, so we just do the download.
+    method: http
 
 context:
   # Which fields go into the teacher's context block.

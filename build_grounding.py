@@ -64,14 +64,103 @@ def fetch_annotations(symbols, cfg):
 
 
 # ── CollecTRI: SIGNED TF->target regulons ──────────────────────────────────
-def fetch_collectri(cfg):
-    if not cfg.sources.collectri.enabled:
+# Fetched over plain HTTP from OmniPath's REST API. We deliberately do NOT
+# depend on `decoupler` for this: decoupler pulls in numba (and a scanpy-ish
+# stack) and its resolver backtracks to numba 0.53.1, which has no Python 3.12
+# wheel and fails to build ("only versions >=3.6,<3.10 are supported"). We use
+# decoupler for exactly one thing — downloading this table — so we just download
+# it. Set sources.collectri.method: decoupler to use the library if you have it.
+
+OMNIPATH_URL = "https://omnipathdb.org/interactions"
+NCBI_TAXID = {"mouse": 10090, "human": 9606, "rat": 10116}
+
+
+def _edges_from_records(records):
+    """rows with (source, target, is_stimulation, is_inhibition) -> signed edges.
+
+    mor = +1 activation / -1 repression.
+
+    Two cleanups, both mirroring what decoupler does:
+
+    1. AMBIGUOUS SIGNS are dropped. Rows that are both stimulation and
+       inhibition (or neither) carry no usable direction, and direction is the
+       entire reason we want CollecTRI. An ambiguous edge is worse than no edge.
+
+    2. COMPLEXES ARE SPLIT. CollecTRI sources include protein complexes written
+       as underscore-joined symbols ("FOS_JUN", "FOSL1_JUNB"). Those never match
+       a single perturbed gene symbol, so left intact they would silently drop
+       coverage. We attribute the edge to each member, like decoupler's
+       split_complexes=True.
+    """
+    edges, tfs, ambiguous, complexes = {}, set(), 0, 0
+    for s, t, stim, inhib in records:
+        s, t = str(s).upper().strip(), str(t).upper().strip()
+        if not s or not t:
+            continue
+        if bool(stim) == bool(inhib):        # 0/0 or 1/1 -> no usable sign
+            ambiguous += 1
+            continue
+        mor = 1.0 if stim else -1.0
+        members = s.split("_") if "_" in s else [s]
+        if len(members) > 1:
+            complexes += 1
+        for member in members:
+            if not member:
+                continue
+            # A single-TF edge beats a complex-derived one on conflict.
+            if (member, t) in edges and len(members) > 1:
+                continue
+            edges[(member, t)] = mor
+            tfs.add(member)
+    return edges, tfs, ambiguous, complexes
+
+
+def fetch_collectri_http(cfg):
+    """OmniPath REST — no numba, no decoupler, no build step."""
+    taxid = NCBI_TAXID.get(cfg.species)
+    if taxid is None:
+        print(f"  [collectri] unknown species '{cfg.species}'")
         return {}, set()
+    params = {
+        "datasets": "collectri",
+        "organisms": str(taxid),      # OmniPath homology-translates for mouse
+        "genesymbols": "yes",
+        "fields": "sources",
+        "format": "tsv",
+    }
+    try:
+        r = requests.get(OMNIPATH_URL, params=params, timeout=180)
+        r.raise_for_status()
+    except Exception as e:
+        print(f"  [collectri] OmniPath fetch failed: {str(e)[:200]}")
+        return {}, set()
+
+    import csv
+    import io
+    rd = csv.DictReader(io.StringIO(r.text), delimiter="\t")
+    cols = rd.fieldnames or []
+    # OmniPath returns *_genesymbol when genesymbols=yes
+    src = "source_genesymbol" if "source_genesymbol" in cols else "source"
+    tgt = "target_genesymbol" if "target_genesymbol" in cols else "target"
+    if src not in cols or "is_stimulation" not in cols:
+        print(f"  [collectri] unexpected columns: {cols[:8]}")
+        return {}, set()
+
+    recs = [(row[src], row[tgt], row["is_stimulation"] == "1",
+             row["is_inhibition"] == "1") for row in rd]
+    edges, tfs, amb, cplx = _edges_from_records(recs)
+    print(f"  [collectri] OmniPath: {len(edges)} signed edges, {len(tfs)} TFs "
+          f"({amb} dropped for ambiguous sign, {cplx} complexes split)")
+    return edges, tfs
+
+
+def fetch_collectri_decoupler(cfg):
+    """Optional path if decoupler is installed (pixi: -e grounding-decoupler)."""
     try:
         import decoupler as dc
     except ImportError:
-        print("  [collectri] decoupler not installed — pip install decoupler")
-        return {}, set()
+        print("  [collectri] decoupler not installed — falling back to HTTP")
+        return fetch_collectri_http(cfg)
     net = None
     for fn in (lambda: dc.op.collectri(organism=cfg.species),
                lambda: dc.get_collectri(organism=cfg.species,
@@ -82,18 +171,27 @@ def fetch_collectri(cfg):
         except Exception as e:
             print(f"  [collectri] {type(e).__name__}: {e}")
     if net is None:
-        return {}, set()
+        return fetch_collectri_http(cfg)
     cols = {c.lower(): c for c in net.columns}
-    src, tgt = cols.get("source"), cols.get("target")
-    mor = cols.get("mor") or cols.get("weight")
+    s_c, t_c = cols.get("source"), cols.get("target")
+    m_c = cols.get("mor") or cols.get("weight")
     edges, tfs = {}, set()
     for r in net.itertuples(index=False):
-        s = str(getattr(r, src)).upper()
-        t = str(getattr(r, tgt)).upper()
-        edges[(s, t)] = float(getattr(r, mor)) if mor else 1.0
+        s = str(getattr(r, s_c)).upper()
+        t = str(getattr(r, t_c)).upper()
+        edges[(s, t)] = float(getattr(r, m_c)) if m_c else 1.0
         tfs.add(s)
-    print(f"  [collectri] {len(edges)} signed edges, {len(tfs)} TFs")
+    print(f"  [collectri] decoupler: {len(edges)} signed edges, {len(tfs)} TFs")
     return edges, tfs
+
+
+def fetch_collectri(cfg):
+    c = cfg.sources.collectri
+    if not c.enabled:
+        return {}, set()
+    method = c.get("method", "http")
+    return (fetch_collectri_decoupler(cfg) if method == "decoupler"
+            else fetch_collectri_http(cfg))
 
 
 # ── per-row features + teacher context ─────────────────────────────────────

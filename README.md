@@ -23,17 +23,55 @@ mlgenx/
 **Artifacts are addressed by run name, never by path**: `--traces v2` reads
 `output/traces/v2/traces.jsonl`; `--out qwen8b` writes `output/sft/qwen8b/`.
 
-## Install
+## Install (pixi)
 
 ```bash
-conda create -n bioreason python=3.11 -y && conda activate bioreason
-pip install "unsloth[cu124-torch260]" "trl>=0.9" datasets scikit-learn \
-            decoupler requests pyyaml kaggle pandas matplotlib
-# optional: pip install wandb
+cd bioreason_sft
+pixi install                 # solves conda + PyPI together into pixi.lock
+pixi run check-gpu           # run this ON A GPU NODE
+```
+
+`pixi.lock` pins **both** the conda and PyPI sides, which matters because this
+stack breaks exactly at that boundary (torch CUDA build ↔ bitsandbytes ↔
+unsloth). The login node that generates traces and the H100 node that trains get
+byte-identical environments — commit `pixi.lock`.
+
+Environments: `default` (CLI), `nb` (+jupyter), `wandb` (+logging), `full` (all).
+
+```bash
+pixi run -e nb notebook          # jupyter lab pipeline.ipynb
+pixi run -e wandb sft            # with metric logging
+pixi shell                       # drop into the env
 ```
 
 Requires compute capability ≥ 7.5 (T4 / A100 / H100). **P100 will not work** —
-bitsandbytes 4-bit needs Turing+, unsloth needs Volta+.
+bitsandbytes 4-bit needs Turing+, unsloth needs Volta+. `check-gpu` hard-fails on
+`sm_<75` rather than letting you discover it via a cryptic
+`cudaErrorNoKernelImageForDevice` an hour in.
+
+### Tasks
+
+`pixi task list` shows them all. The pipeline, in order:
+
+| Task | Where | What |
+| --- | --- | --- |
+| `pixi run data` | login node | download Kaggle data → `../data` |
+| `pixi run grounding` | login node | mygene + CollecTRI → `../output/grounding/default` |
+| `pixi run traces-smoke` | login node | 30 traces — **run this and read them first** |
+| `pixi run traces` | login node | full generation (~1–3 h, resumable) |
+| `pixi run sft` | **GPU** | QLoRA + reasoning distillation (Qwen3-8B) |
+| `pixi run sft-control` | **GPU** | the label-only control |
+| `pixi run sft-gemma` | **GPU** | base-model A/B |
+| `pixi run grpo` | **GPU** | RL on top of the SFT adapter |
+| `pixi run results` | anywhere | leaderboard of all local runs |
+| `pixi run submit` | login node | `sbatch` the experiment array |
+
+Tasks declare dependencies (`traces` → `grounding` → `data`), so `pixi run
+traces-smoke` on a clean checkout does the whole cheap chain. `pixi run
+pipeline-smoke` is that chain explicitly.
+
+Tasks are convenience wrappers for the common case — for anything custom, call
+the scripts directly with `--config` / `--set` (see below).
 
 ## The config system
 
@@ -74,6 +112,41 @@ the snapshot won't.
 
 To try a new teacher prompt: copy `prompts/teacher/default.yaml` →
 `terse.yaml`, edit, then `--set prompts=teacher/terse`. No code touched.
+
+## Choosing a base model
+
+Track C caps the student at **<10B parameters**. Two configs ship ready:
+
+```bash
+python train_sft_distill.py --config h100_8b    --traces default --out qwen8b     # Qwen3-8B
+python train_sft_distill.py --config gemma4_e4b --traces default --out gemma4b    # Gemma 4 E4B
+```
+
+| Model | Params | Eligible | Notes |
+| --- | --- | --- | --- |
+| **Qwen3-8B** | 8.2B dense | yes | **default pick.** Most knowledge capacity in budget; mature fine-tuning ecosystem |
+| Qwen3-4B-Thinking | 4B | yes | organizers' baseline; fits a T4 |
+| Gemma 4 E4B | ~4.5B effective (~6B total) | yes | Apache 2.0, native thinking; but *edge* tier (Per-Layer Embeddings) |
+| Gemma 4 E2B | ~2.3B effective | yes | too small for a knowledge-bound task |
+| Gemma 4 26B A4B | 25.2B total / 3.8B active | **probably not** | MoE. "<10B" almost certainly means *total* — ask the organizers before relying on it |
+| Gemma 4 12B / 31B | 12B / 30.7B | no | over the cap |
+
+**Why Qwen3-8B by default:** this task is *knowledge-bound* — the bottleneck is
+knowing what `Sbno2` does in a macrophage, not reasoning capacity. Under the
+superficial-alignment hypothesis the knowledge must already be latent in
+pretraining for traces to activate it, so parameters-for-facts is the thing to
+buy. Gemma's E2B/E4B are built for phones and trade exactly that away.
+
+**If you A/B Gemma**, two gotchas are already handled in the config: its chat
+markers are `<start_of_turn>user\n` / `<start_of_turn>model\n`, **not** ChatML —
+get these wrong and `train_on_responses_only` silently masks nothing. And Gemma
+templates have no separate system role; the system prompt is folded into the
+first user turn. It's also multimodal — this is the family whose processor
+signature `(images, text, videos)` silently routed a positional string into
+`images` and returned garbage. Always pass `text=` by keyword.
+
+**Kaggle model mounts are irrelevant here.** They exist for Kaggle notebooks with
+internet off. On SLURM, HF is the same weights by a faster path.
 
 ## Kaggle credentials
 
@@ -163,8 +236,10 @@ TRACES_RUN=v2 sbatch slurm/run_experiment.sbatch
 ```
 
 Run the CPU stages (download / grounding / traces) once on the login node first —
-they need internet, not a GPU. Update the `module load` / `conda activate` lines
-and `--partition` for your cluster.
+they need internet, not a GPU. The script activates the pixi env via
+`pixi shell-hook` (no conda), so compute nodes get the same `pixi.lock` the login
+node used. Update `--partition`, the `module load cuda` line, and `PIXI_HOME` for
+your cluster. It passes `--resume` unconditionally, so requeued jobs self-heal.
 
 ## Notebook
 
@@ -200,7 +275,19 @@ into weights. The student never sees a database.
 
 **CollecTRI is the highest-value source** because it's *signed*: knock down an
 activator → target down; knock down a repressor → target up. That's DIR-AUROC,
-the metric half even SOTA only reaches ~0.65–0.73 on.
+the metric half even SOTA only reaches ~0.65–0.73 on. We fetch it straight from
+OmniPath's REST API with `requests` rather than via `decoupler` — decoupler
+depends on numba, whose resolver backtracks to numba 0.53.1 (no Python 3.12
+wheel, and its sdist refuses to build: *"only versions >=3.6,<3.10 are
+supported"*). We used decoupler for exactly one download, so we do the download.
+The optional library path still exists: `pixi run -e grounding-decoupler
+grounding` with `--set sources.collectri.method=decoupler`.
+
+Two cleanups happen on the way in: rows with **ambiguous signs** (both or neither
+stimulation/inhibition) are dropped, because an edge without a direction is worse
+than no edge here; and **protein complexes** (`FOS_JUN`, `FOSL1_JUNB`) are split
+into member TFs, since a complex name never matches a single perturbed gene
+symbol and would silently cost coverage.
 
 **Approach 2 (rationalize the known label)** means the teacher's own accuracy
 stops mattering: o4-mini scored ~52% on this task, yet its traces trained an 8B

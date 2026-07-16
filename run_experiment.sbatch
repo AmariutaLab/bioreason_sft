@@ -9,20 +9,30 @@
 # Each array task = one independent experiment (its own configs + run names), so
 # ablations run in parallel rather than serially.
 #
-# CPU-only prerequisites (run ONCE on the login node, they need internet, not GPU):
-#   python download_data.py
-#   python build_grounding.py --out default
-#   TEACHER_API_KEY=... python build_traces.py --out default
+# CPU-only prerequisites (run ONCE on the login node — they need internet, not GPU):
+#   pixi install
+#   pixi run data
+#   pixi run grounding
+#   TEACHER_API_KEY=... pixi run traces-smoke     # then READ the traces
+#   TEACHER_API_KEY=... pixi run traces
 # =============================================================================
 #SBATCH --job-name=bioreason
-#SBATCH --partition=gpu                 # <-- CHANGE to your H100 partition
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gpus=h100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
-#SBATCH --time=12:00:00
+#SBATCH --mem=90G
+#SBATCH -t 12:00:00
 #SBATCH --output=../output/slurm/%x-%A_%a.out
 #SBATCH --error=../output/slurm/%x-%A_%a.err
-#SBATCH --array=0-2                     # index into EXPERIMENTS below
+#SBATCH --partition=nairr-gpu-shared
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --account=sdp147
+#SBATCH --no-requeue
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=i3gupta@ucsd.edu
+#SBATCH --array=0-3                     # index into EXPERIMENTS below
 
 set -euo pipefail
 
@@ -32,8 +42,13 @@ set -euo pipefail
 #   EXTRA       : optional "--set key=val" overrides, space separated
 # Edit this list; do NOT edit the python source to change an experiment.
 EXPERIMENTS=(
+  # main run: Qwen3-8B (8.2B dense, most knowledge capacity under the 10B cap)
   "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
+  # base-model A/B: Gemma 4 E4B (Apache 2.0, native thinking, but edge-tier)
+  "sft+grpo|gemma4_e4b|gemma4b|gemma4_e4b|gemma4b-grpo|"
+  # the SynthPert control: how much do the traces actually buy?
   "sft|label_only_ablation|abl-labelonly||| "
+  # hyperparameter sweep without touching source
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 
@@ -56,17 +71,21 @@ echo "=================================================="
 cd "$SLURM_SUBMIT_DIR"
 mkdir -p ../output/slurm
 
-# CHANGE these to match your cluster
+# CHANGE to match your cluster
 module load cuda/12.4 || true
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate bioreason
 
-export MLGENX_ROOT="$(cd .. && pwd)"
-export TOKENIZERS_PARALLELISM=false
-export HF_HOME="${HF_HOME:-$MLGENX_ROOT/.hf_cache}"     # keep HF cache off $HOME
-# export WANDB_API_KEY=...   # or add --set wandb.enabled=true and log in first
+# pixi provides the env. `pixi shell-hook` activates it into THIS shell, so the
+# srun'd python below is the project interpreter — no conda, no PATH surprises,
+# and the exact same pixi.lock the login node used for trace generation.
+export PIXI_HOME="${PIXI_HOME:-$HOME/.pixi}"
+export PATH="$PIXI_HOME/bin:$PATH"
+eval "$(pixi shell-hook -e default)"
 
-python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+# pixi's [activation.env] already sets TOKENIZERS_PARALLELISM and HF_HOME.
+# For wandb use: -e wandb, and export WANDB_API_KEY (or add it as a cluster secret).
+# eval "$(pixi shell-hook -e wandb)"
+
+pixi run check-gpu
 
 # ── run ──────────────────────────────────────────────────────────────────────
 # --resume is safe on a fresh run (no checkpoint -> starts from scratch), so

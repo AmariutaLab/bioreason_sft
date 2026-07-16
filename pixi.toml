@@ -1,0 +1,198 @@
+# =============================================================================
+# bioreason_sft — Track C: reasoning distillation -> GRPO
+#
+#   pixi install                 # solve + install everything (once)
+#   pixi run check-gpu           # verify CUDA/torch/bitsandbytes on a GPU node
+#   pixi run pipeline-smoke      # data -> grounding -> 30 traces
+#   pixi shell                   # drop into the env
+#
+# Why pixi here: this stack breaks at the conda/PyPI boundary (torch CUDA build
+# vs bitsandbytes vs unsloth). pixi locks BOTH sides in one pixi.lock, so the
+# login node (trace generation) and the H100 compute nodes cannot silently
+# diverge — which is the failure mode that wastes a night of GPU time.
+# =============================================================================
+
+[workspace]
+name = "bioreason_sft"
+version = "0.1.0"
+description = "CRISPRi perturbation prediction: reasoning distillation + GRPO"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+# H100 = sm_90, needs CUDA 12.x. Pixi uses this to solve for GPU-capable builds
+# and to refuse to install on a machine that can't run them.
+# NOTE: compute capability >= 7.5 required (T4/A100/H100). P100 (CC 6.0) will
+# NOT work: bitsandbytes 4-bit needs Turing+, unsloth needs Volta+.
+[system-requirements]
+cuda = "12.4"
+
+# torch CUDA wheels do not live on PyPI proper.
+[pypi-options]
+extra-index-urls = ["https://download.pytorch.org/whl/cu124"]
+
+
+# ── conda side: interpreter + scientific stack ──────────────────────────────
+# These resolve better from conda-forge than PyPI (compiled BLAS etc).
+[dependencies]
+python = "3.12.*"
+pip = ">=24.0"
+numpy = ">=1.26,<3"
+# pandas 3.x dropped the `parquet` extra some packages still request, and the
+# PyPI/conda pandas can end up installed side by side. Stay on 2.x: nothing here
+# needs 3.x, and `datasets` is happier.
+pandas = ">=2.1,<3"
+pyarrow = ">=15"              # requested transitively; get it from conda-forge
+scipy = ">=1.11"
+scikit-learn = ">=1.4"        # roc_auc_score — the competition metric
+pyyaml = ">=6.0"              # config system
+requests = ">=2.31"           # teacher API + mygene.info
+matplotlib = ">=3.8"          # GRPO val-curve plot in the notebook
+tqdm = ">=4.66"
+git = "*"                     # some pip installs need it
+
+
+# ── PyPI side: the ML stack ─────────────────────────────────────────────────
+# Deliberately NOT from conda-forge: unsloth/bitsandbytes/trl ship PyPI-first and
+# the conda builds lag. Mixing conda-torch with pip-unsloth is the classic way to
+# get a silently broken bitsandbytes.
+[pypi-dependencies]
+torch = ">=2.5,<2.9"          # cu124 wheels via the extra index above
+# unsloth pins its own transformers/peft/accelerate range — let it drive, and do
+# NOT pin transformers here or you will fight its resolver.
+unsloth = ">=2025.1"
+unsloth_zoo = ">=2025.1"
+trl = ">=0.12"                # SFTTrainer + GRPOTrainer
+peft = ">=0.13"               # LoRA / PeftModel.from_pretrained
+datasets = ">=3.0"
+accelerate = ">=1.0"
+bitsandbytes = ">=0.44"       # 4-bit NF4 (QLoRA) + adamw_8bit
+sentencepiece = "*"           # Gemma tokenizer
+protobuf = "*"                # ditto
+huggingface-hub = ">=0.26"
+
+# NOTE: decoupler/omnipath are deliberately NOT here. We used decoupler for one
+# call (dc.op.collectri) — a download. It depends on numba, and the resolver
+# backtracks to numba 0.53.1, which has no py3.12 wheel and fails its own build
+# guard ("only versions >=3.6,<3.10 supported"). build_grounding.py now fetches
+# CollecTRI straight from OmniPath's REST API with `requests`. If you want the
+# library anyway: pixi run -e grounding-decoupler grounding
+#   (and set sources.collectri.method: decoupler)
+
+# data access
+kagglehub = ">=0.3"           # understands the NEW Kaggle token flow
+kaggle = ">=1.6"              # CLI fallback
+
+
+# ── environment variables ───────────────────────────────────────────────────
+[activation.env]
+TOKENIZERS_PARALLELISM = "false"        # silences the fork warning during eval
+# Keep the HF cache next to the project, not in $HOME (cluster quotas).
+HF_HOME = "$PIXI_PROJECT_ROOT/../.hf_cache"
+# paths.py derives ROOT from the package location, so MLGENX_ROOT is optional.
+# Uncomment to override (e.g. if you symlink the code elsewhere):
+# MLGENX_ROOT = "$PIXI_PROJECT_ROOT/.."
+
+
+# ── optional features ───────────────────────────────────────────────────────
+# pixi run -e nb notebook          (jupyter)
+# pixi run -e wandb sft            (metric logging)
+# pixi run -e full  ...            (both)
+
+[feature.nb.dependencies]
+jupyterlab = ">=4.0"
+ipykernel = ">=6.29"
+ipywidgets = ">=8.1"
+
+[feature.wandb.pypi-dependencies]
+wandb = ">=0.18"
+
+[feature.dev.dependencies]
+ipython = "*"
+ruff = "*"
+
+# Optional decoupler path for grounding. Kept in its OWN solve group so its numba
+# constraint can never drag the training env backwards. CPU-only, login node.
+[feature.grounding-decoupler.dependencies]
+numba = ">=0.60"              # pin forward: 0.59+ is the first with py3.12 wheels
+[feature.grounding-decoupler.pypi-dependencies]
+decoupler = ">=1.8"
+omnipath = ">=1.0"
+
+[environments]
+default = { solve-group = "main" }
+nb      = { features = ["nb"], solve-group = "main" }
+wandb   = { features = ["wandb"], solve-group = "main" }
+full    = { features = ["nb", "wandb", "dev"], solve-group = "main" }
+# separate solve group on purpose — see the comment above
+grounding-decoupler = { features = ["grounding-decoupler"] }
+
+
+# ── tasks: the whole pipeline ───────────────────────────────────────────────
+# Run in order. Stages 0-2 are CPU + internet (login node); 3-4 need a GPU.
+[tasks]
+
+# -- diagnostics -------------------------------------------------------------
+paths = { cmd = "python paths.py", description = "show layout + existing runs" }
+
+check-gpu = { cmd = """
+python -c "
+import torch, sys
+print('torch     ', torch.__version__)
+print('cuda avail', torch.cuda.is_available())
+if not torch.cuda.is_available(): sys.exit('NO GPU VISIBLE')
+cc = torch.cuda.get_device_capability(0)
+print('device    ', torch.cuda.get_device_name(0), f'(sm_{cc[0]}{cc[1]})')
+print('bf16      ', torch.cuda.is_bf16_supported())
+if cc[0]*10+cc[1] < 75:
+    sys.exit('FATAL: compute capability <7.5 — bitsandbytes 4-bit needs Turing+, '
+             'unsloth needs Volta+. P100 will not work; use T4/A100/H100.')
+import bitsandbytes, unsloth
+print('bitsandbytes', bitsandbytes.__version__)
+print('OK')
+"
+""", description = "verify CUDA + compute capability + bitsandbytes (run on a GPU node)" }
+
+# -- stage 0-2: CPU + internet, run on the login node ------------------------
+data = { cmd = "python download_data.py", description = "download Kaggle data -> ../data" }
+
+grounding = { cmd = "python build_grounding.py --out default", depends-on = ["data"], description = "mygene + CollecTRI -> ../output/grounding/default" }
+
+traces-smoke = { cmd = "python build_traces.py --out smoke --config smoke", depends-on = ["grounding"], description = "30 traces. ALWAYS run this first and READ them." }
+
+traces = { cmd = "python build_traces.py --out default --config default", depends-on = ["grounding"], description = "full trace generation (~1-3h, resumable)" }
+
+# -- stage 3-4: GPU ----------------------------------------------------------
+sft = { cmd = "python train_sft_distill.py --config h100_8b --traces default --out qwen8b", description = "QLoRA + reasoning distillation (Qwen3-8B)" }
+
+sft-resume = { cmd = "python train_sft_distill.py --config h100_8b --traces default --out qwen8b --resume", description = "resume the qwen8b SFT run at its exact step" }
+
+sft-gemma = { cmd = "python train_sft_distill.py --config gemma4_e4b --traces default --out gemma4b", description = "base-model A/B: Gemma 4 E4B" }
+
+sft-control = { cmd = "python train_sft_distill.py --config label_only_ablation --traces default --out abl-labelonly", description = "SynthPert control: label-only SFT (no traces)" }
+
+grpo = { cmd = "python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo", description = "GRPO on top of the SFT adapter" }
+
+# -- convenience -------------------------------------------------------------
+pipeline-smoke = { depends-on = ["data", "grounding", "traces-smoke"], description = "everything cheap, end to end" }
+
+notebook = { cmd = "jupyter lab pipeline.ipynb", description = "notebook version (use: pixi run -e nb notebook)" }
+
+results = { cmd = """
+python -c "
+import json, pathlib, paths
+rows=[]
+for stage in ('sft','grpo'):
+    d = paths.OUTPUT/stage
+    for run in sorted([x for x in d.iterdir() if x.is_dir()] if d.exists() else []):
+        mp = run/'metrics.json'
+        if not mp.exists(): continue
+        m = json.loads(mp.read_text())
+        s = m.get('blocked_val_score') or m.get('best_blocked_val')
+        rows.append((s if s is not None else -1, stage, run.name, m.get('traces_run') or m.get('sft_run')))
+if not rows: print('no finished runs yet')
+for s, stage, run, src in sorted(rows, reverse=True):
+    print(f'{s:.4f}  {stage:5} {run:24} <- {src}')
+"
+""", description = "leaderboard of all local runs by blocked-val score" }
+
+submit = { cmd = "sbatch slurm/run_experiment.sbatch", description = "launch the SLURM experiment array" }

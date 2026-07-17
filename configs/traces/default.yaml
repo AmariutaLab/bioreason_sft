@@ -12,6 +12,16 @@ teacher:
   api_key_env: OPENAI_API_KEY    # name of the env var holding the key
   temperature: 0.7               # some diversity; traces are filtered anyway
   max_tokens: 1200
+prompts: teacher/default
+grounding_run: default
+workers: 6
+
+teacher:
+  api_key_env: TEACHER_API_KEY
+  base_url: https://api.openai.com/v1
+  model: o4-mini
+  temperature: 0.6
+  max_tokens: 650
   timeout: 180
   max_retries: 3
 

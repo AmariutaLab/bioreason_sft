@@ -10,7 +10,7 @@ mlgenx/
 ├── bioreason_sft/              # code + configs + prompts (this dir)
 │   ├── configs/<stage>/*.yaml  # what to run
 │   ├── prompts/<kind>/*.yaml   # all prompt text
-│   ├── slurm/run_experiment.sbatch
+│   ├── run_experiment.sbatch
 │   └── pipeline.ipynb          # notebook version of the CLI
 ├── data/                       # train.csv, test.csv
 └── output/
@@ -23,31 +23,34 @@ mlgenx/
 **Artifacts are addressed by run name, never by path**: `--traces v2` reads
 `output/traces/v2/traces.jsonl`; `--out qwen8b` writes `output/sft/qwen8b/`.
 
+Keep `data/` and `output/` outside the Git repo. They are local Kaggle data and
+generated artifacts, not source files.
+
 ## Install (pixi)
 
 ```bash
 cd bioreason_sft
-pixi install                 # solves conda + PyPI together into pixi.lock
-pixi run check-gpu           # run this ON A GPU NODE
+pixi install                 # default env: V100-compatible Torch/PEFT path
+pixi run check-gpu-v100      # run this ON A V100 GPU NODE
 ```
 
 `pixi.lock` pins **both** the conda and PyPI sides, which matters because this
-stack breaks exactly at that boundary (torch CUDA build ↔ bitsandbytes ↔
-unsloth). The login node that generates traces and the H100 node that trains get
-byte-identical environments — commit `pixi.lock`.
+stack breaks exactly at that boundary. The default env is intentionally
+V100-compatible for `csd832`; the optional `h100` env adds Unsloth/bitsandbytes
+for later NAIRR/H100 access.
 
-Environments: `default` (CLI), `nb` (+jupyter), `wandb` (+logging), `full` (all).
+Environments: `default`/`v100` (CLI), `h100` (+Unsloth/bitsandbytes), `nb`
+(+jupyter), `wandb` (+logging), `full` (all).
 
 ```bash
 pixi run -e nb notebook          # jupyter lab pipeline.ipynb
-pixi run -e wandb sft            # with metric logging
+pixi run -e h100 check-gpu-h100  # later, on H100/NAIRR only
 pixi shell                       # drop into the env
 ```
 
-Requires compute capability ≥ 7.5 (T4 / A100 / H100). **P100 will not work** —
-bitsandbytes 4-bit needs Turing+, unsloth needs Volta+. `check-gpu` hard-fails on
-`sm_<75` rather than letting you discover it via a cryptic
-`cudaErrorNoKernelImageForDevice` an hour in.
+The V100 path uses standard Transformers + PEFT fp16 LoRA. The H100 path can use
+4-bit/Unsloth accelerators, but that should wait until the `sdp147`/NAIRR access
+issue is resolved.
 
 ### Tasks
 
@@ -59,9 +62,10 @@ bitsandbytes 4-bit needs Turing+, unsloth needs Volta+. `check-gpu` hard-fails o
 | `pixi run grounding` | login node | mygene + CollecTRI → `../output/grounding/default` |
 | `pixi run traces-smoke` | login node | 30 traces — **run this and read them first** |
 | `pixi run traces` | login node | full generation (~1–3 h, resumable) |
-| `pixi run sft` | **GPU** | QLoRA + reasoning distillation (Qwen3-8B) |
+| `pixi run label-traces` | anywhere | deterministic blocked-train fallback traces |
+| `pixi run sft-v100` | **V100 GPU** | practical 4B baseline with fallback traces |
+| `pixi run -e h100 sft` | **H100 GPU** | later H100/NAIRR path |
 | `pixi run sft-control` | **GPU** | the label-only control |
-| `pixi run sft-gemma` | **GPU** | base-model A/B |
 | `pixi run grpo` | **GPU** | RL on top of the SFT adapter |
 | `pixi run results` | anywhere | leaderboard of all local runs |
 | `pixi run submit` | login node | `sbatch` the experiment array |
@@ -115,11 +119,12 @@ To try a new teacher prompt: copy `prompts/teacher/default.yaml` →
 
 ## Choosing a base model
 
-Track C caps the student at **<10B parameters**. Two configs ship ready:
+Track C caps the student at **<10B parameters**. Practical configs currently
+ship for the V100-accessible 4B path and the later H100 path:
 
 ```bash
-python train_sft_distill.py --config h100_8b    --traces default --out qwen8b     # Qwen3-8B
-python train_sft_distill.py --config gemma4_e4b --traces default --out gemma4b    # Gemma 4 E4B
+python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100
+python train_sft_distill.py --config h100_8b --traces default --out qwen8b
 ```
 
 | Model | Params | Eligible | Notes |
@@ -137,13 +142,8 @@ superficial-alignment hypothesis the knowledge must already be latent in
 pretraining for traces to activate it, so parameters-for-facts is the thing to
 buy. Gemma's E2B/E4B are built for phones and trade exactly that away.
 
-**If you A/B Gemma**, two gotchas are already handled in the config: its chat
-markers are `<start_of_turn>user\n` / `<start_of_turn>model\n`, **not** ChatML —
-get these wrong and `train_on_responses_only` silently masks nothing. And Gemma
-templates have no separate system role; the system prompt is folded into the
-first user turn. It's also multimodal — this is the family whose processor
-signature `(images, text, videos)` silently routed a positional string into
-`images` and returned garbage. Always pass `text=` by keyword.
+Gemma A/B configs can be added later, but the immediate goal is to get one
+robust baseline through the full submission pipeline before expanding the sweep.
 
 **Kaggle model mounts are irrelevant here.** They exist for Kaggle notebooks with
 internet off. On SLURM, HF is the same weights by a faster path.
@@ -192,11 +192,18 @@ python build_traces.py --out smoke --config smoke
 #    then READ the traces (see "Trace QA" below) before spending on:
 python build_traces.py --out default --config default
 
+# fallback if no teacher key yet: deterministic blocked-train label traces
+python build_label_traces.py --out label-default --config v100_4b
+
 # 3. SFT (GPU, ~1-2 h)
-python train_sft_distill.py --config h100_8b --traces default --out qwen8b
+python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100
 
 # 4. GRPO (GPU, several h)
 python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo
+
+# 5. submission
+python make_submission.py --stage sft --run qwen4b-v100
+python validate_submission.py ../output/submissions/sft-qwen4b-v100.zip
 ```
 
 ### Resume
@@ -218,21 +225,26 @@ wandb (`--set wandb.enabled=true`) is for configs and curves, **not** resume.
 
 ## SLURM
 
-Edit the `EXPERIMENTS` array in `slurm/run_experiment.sbatch` — one line per
+Edit the `EXPERIMENTS` array in `run_experiment.sbatch` — one line per
 experiment, `"STAGE|SFT_CONFIG|SFT_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"`:
 
 ```bash
 EXPERIMENTS=(
-  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
+  "sft|v100_4b|qwen4b-v100||| "
   "sft|label_only_ablation|abl-labelonly||| "
+  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
   "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 ```
 
 ```bash
-sbatch slurm/run_experiment.sbatch              # all of them, in parallel
-sbatch --array=0 slurm/run_experiment.sbatch    # just the first
-TRACES_RUN=v2 sbatch slurm/run_experiment.sbatch
+sbatch -A csd832 run_experiment.sbatch              # default V100 baseline
+sbatch -A csd832 --array=1 run_experiment.sbatch    # label-only control
+
+# later, after NAIRR access:
+sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 --array=2-3 \
+  --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100,TRACES_RUN=default \
+  run_experiment.sbatch
 ```
 
 Run the CPU stages (download / grounding / traces) once on the login node first —

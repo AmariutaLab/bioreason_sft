@@ -1,0 +1,8 @@
+extends: default
+
+workers: 2
+
+sampling:
+  n: 30
+  seed: 42
+  balance_classes: true

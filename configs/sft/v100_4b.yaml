@@ -1,0 +1,15 @@
+extends: default
+
+model:
+  max_seq_length: 1024
+  load_in_4bit: false
+
+train:
+  batch: 1
+  grad_accum: 16
+  optim: adamw_torch
+  bf16: false
+
+eval:
+  infer_batch: 2
+  gen_max_new: 256

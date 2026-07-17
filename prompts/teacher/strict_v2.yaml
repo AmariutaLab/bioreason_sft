@@ -43,12 +43,12 @@ prompt_none: |
   {rules}
 
 critic: |
-  You are filtering rationales for use as supervised training data. The outcome
-  is known; grade only whether the rationale is specific, useful, and honest.
+  You are filtering biological rationales for factuality before they are used
+  as supervised training data. Do not infer or reward the final answer. Grade
+  only whether the rationale is specific, context-supported, and honest.
 
   Perturbed gene: {pert}
   Target gene: {gene}
-  Outcome: {meaning}
 
   RATIONALE:
   {trace}
@@ -67,6 +67,8 @@ critic: |
 
   Be harsh. If a rationale could apply to hundreds of gene pairs, score <= 2.
   If it invents a direct edge for a poorly characterized gene, score <= 1.
+  If it claims significance, observed effects, log fold-change, or benchmark
+  threshold information, score 0.
   Reply with ONLY JSON: {{"score": <int>, "reason": "<8 words>"}}
 
 leak_patterns:

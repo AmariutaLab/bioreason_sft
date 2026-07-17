@@ -22,6 +22,10 @@ import pandas as pd
 import torch
 from datasets import Dataset
 from transformers import TrainerCallback
+
+import hf_import_shim
+
+hf_import_shim.patch_importlib_metadata_for_trl()
 from trl import GRPOTrainer, GRPOConfig
 
 import common

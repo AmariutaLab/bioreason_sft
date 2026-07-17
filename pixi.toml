@@ -52,7 +52,9 @@ git = "*"                     # some pip installs need it
 # in feature.h100 below.
 [pypi-dependencies]
 torch = ">=2.5,<2.9"          # cu124 wheels via the extra index above
-transformers = ">=4.51"
+# TRL 1.8 requires >=4.56.2. Keep to the lowest compatible 4.x line: newer
+# Transformers builds add expensive import-time filesystem walks on Lustre.
+transformers = ">=4.56.2,<4.57"
 trl = ">=0.12"                # SFTTrainer + GRPOTrainer
 peft = ">=0.13"               # LoRA / PeftModel.from_pretrained
 datasets = ">=3.0"
@@ -77,6 +79,12 @@ kaggle = ">=1.6"              # CLI fallback
 # ── environment variables ───────────────────────────────────────────────────
 [activation.env]
 TOKENIZERS_PARALLELISM = "false"        # silences the fork warning during eval
+# Avoid OpenBLAS/MKL trying to allocate many worker threads on shared/login
+# contexts or under Slurm cgroups before Python has applied any limits.
+OMP_NUM_THREADS = "1"
+OPENBLAS_NUM_THREADS = "1"
+MKL_NUM_THREADS = "1"
+NUMEXPR_NUM_THREADS = "1"
 # Keep the HF cache next to the project, not in $HOME (cluster quotas).
 HF_HOME = "$PIXI_PROJECT_ROOT/../.hf_cache"
 # paths.py derives ROOT from the package location, so MLGENX_ROOT is optional.

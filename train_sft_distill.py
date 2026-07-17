@@ -20,6 +20,10 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset
+
+import hf_import_shim
+
+hf_import_shim.patch_importlib_metadata_for_trl()
 from trl import SFTTrainer, SFTConfig
 
 import common
@@ -174,10 +178,17 @@ def main():
     if cfg.eval.enabled:
         modeling.prepare_for_inference(model, backend)
         model.eval()
-        print("\nScoring blocked val (generate reasoning -> read letter logits) ...")
-        vl, vtr = score_rows(model, tokenizer, task, va, letter_ids,
+        max_eval_rows = int(cfg.eval.get("max_rows", 0) or 0)
+        if max_eval_rows > 0 and len(va) > max_eval_rows:
+            va_eval = va.sample(max_eval_rows, random_state=cfg.split.seed)
+            print(f"\nScoring blocked val subset ({len(va_eval)}/{len(va)} rows) "
+                  "(generate reasoning -> read letter logits) ...")
+        else:
+            va_eval = va
+            print("\nScoring blocked val (generate reasoning -> read letter logits) ...")
+        vl, vtr = score_rows(model, tokenizer, task, va_eval, letter_ids,
                              cfg.eval.gen_max_new, cfg.eval.infer_batch)
-        best_T, best = common.tune_temperature(vl, va["label"].values,
+        best_T, best = common.tune_temperature(vl, va_eval["label"].values,
                                                tuple(cfg.eval.temperature_grid))
         print(f"\nBLOCKED-VAL SCORE = {best:.4f} (T={best_T})")
         print("\n--- example generated reasoning ---\n" + vtr[0][:600])

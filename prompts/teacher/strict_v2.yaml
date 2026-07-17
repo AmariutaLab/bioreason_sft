@@ -12,6 +12,10 @@ rules: |
   - Do not mention labels, answer choices, FDR, log2 fold-change thresholds,
     the training screen, databases, annotations, GO, or that an answer was
     provided.
+  - Do not begin by restating that knockdown caused up-regulation,
+    down-regulation, or no significant change. Explain gene functions and
+    evidence first, then end cautiously.
+  - Do not use "significant", "observed", or "compensatory mechanism" language.
   - Prefer one short causal chain over broad pathway prose.
   - Output only the rationale in 3-5 sentences.
 
@@ -79,6 +83,9 @@ leak_patterns:
   - '\bground.?truth\b'
   - '\btraining screen\b'
   - '\bFDR\b'
+  - '\bsignificant(?:ly)?\b'
+  - '\bobserved\b'
+  - '\bcompensatory mechanism\b'
   - '\blog2\\s*fold\\s*change\b'
   - '\blog2FC\b'
   - '\bthe provided context\b'

@@ -7,7 +7,7 @@ teacher:
   max_tokens: 700
 
 critic:
-  min_score: 5
+  min_score: 4
   max_tokens: 120
 
 sampling:
@@ -16,7 +16,7 @@ sampling:
   seed: 43
 
 filters:
-  min_chars: 180
+  min_chars: 140
   require_gene_mentions: true
   reject_patterns:
     - '\bmay affect\b'

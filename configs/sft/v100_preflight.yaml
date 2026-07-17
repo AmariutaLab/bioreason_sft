@@ -1,0 +1,8 @@
+extends: v100_labelonly_screen
+
+train:
+  max_steps: 1
+  save_strategy: "no"
+
+eval:
+  enabled: false

@@ -129,7 +129,8 @@ def main():
     print("\n--- sample target (tail) ---\n" + texts[0][-380:] + "\n---")
 
     t = cfg.train
-    steps = math.ceil(len(ds) / (t.batch * t.grad_accum)) * t.epochs
+    max_steps = int(t.get("max_steps", -1) or -1)
+    steps = max_steps if max_steps > 0 else math.ceil(len(ds) / (t.batch * t.grad_accum)) * t.epochs
     warm = max(1, int(steps * t.warmup_frac))
     print(f"steps={steps} warmup={warm}")
 
@@ -155,6 +156,7 @@ def main():
             per_device_train_batch_size=t.batch,
             gradient_accumulation_steps=t.grad_accum,
             num_train_epochs=t.epochs, learning_rate=t.lr,
+            max_steps=max_steps,
             warmup_steps=warm, lr_scheduler_type="cosine",
             logging_steps=t.logging_steps, optim=t.optim,
             weight_decay=t.weight_decay, seed=cfg.split.seed,

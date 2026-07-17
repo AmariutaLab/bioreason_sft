@@ -1,4 +1,6 @@
 __pycache__/
+*.lock
+.agents/
 .ipynb_checkpoints/
 *.pyc
 .pixi/

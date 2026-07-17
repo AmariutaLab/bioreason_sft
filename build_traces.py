@@ -1,6 +1,6 @@
 """Stage 1: generate + critic-filter synthetic reasoning traces.
 
-    export TEACHER_API_KEY=...
+    export OPENAI_API_KEY=...
     python build_traces.py --out smoke   --config smoke     # ALWAYS smoke first
     python build_traces.py --out default --config default
 

@@ -7,9 +7,9 @@ teacher:
   # Any OpenAI-compatible endpoint: OpenAI, DeepSeek, OpenRouter, Together, or a
   # local vLLM server. Prefer an OPEN teacher: most commercial APIs restrict
   # using outputs to train competing models, and this work gets published.
-  model: deepseek-reasoner
-  base_url: https://api.deepseek.com/v1
-  api_key_env: TEACHER_API_KEY   # name of the env var holding the key
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY    # name of the env var holding the key
   temperature: 0.7               # some diversity; traces are filtered anyway
   max_tokens: 1200
   timeout: 180

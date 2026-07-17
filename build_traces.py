@@ -77,6 +77,23 @@ def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg):
         return 0, "unparseable"
 
 
+def quality_prefilter(trace, pert, gene, cfg):
+    """Cheap deterministic QA before spending critic calls.
+
+    The LLM critic can be over-generous. These checks catch failure modes that
+    are unambiguously bad training data: the rationale does not mention the
+    requested genes, or it uses banned generic/meta phrases.
+    """
+    if cfg.get_path("filters.require_gene_mentions", False):
+        for sym in (pert, gene):
+            if not re.search(rf"\b{re.escape(str(sym))}\b", trace, re.I):
+                return False, f"missing {sym}"
+    for pat in cfg.get_path("filters.reject_patterns", []) or []:
+        if re.search(pat, trace, re.I):
+            return False, f"reject pattern: {pat[:35]}"
+    return True, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="traces run name")
@@ -130,7 +147,7 @@ def main():
         print(f"Resuming: {len(done)} traces already written")
 
     lock = threading.Lock()
-    stats = {"kept": 0, "leak": 0, "lowscore": 0, "fail": 0}
+    stats = {"kept": 0, "leak": 0, "prefilter": 0, "lowscore": 0, "fail": 0}
     fh = out_file.open("a")
 
     def work(r):
@@ -147,6 +164,12 @@ def main():
         if not trace or len(trace) < cfg.filters.min_chars:
             with lock:
                 stats["fail"] += 1
+            return
+        ok, why_prefilter = quality_prefilter(trace, r.perturb_gene,
+                                              r.target_gene, cfg)
+        if not ok:
+            with lock:
+                stats["prefilter"] += 1
             return
         if leak_re and leak_re.search(trace):
             with lock:
@@ -172,14 +195,16 @@ def main():
             n = sum(stats.values())
             if n % 25 == 0:
                 print(f"  {n}/{len(rows)} kept={stats['kept']} leak={stats['leak']} "
-                      f"low={stats['lowscore']} fail={stats['fail']}")
+                      f"prefilter={stats['prefilter']} low={stats['lowscore']} "
+                      f"fail={stats['fail']}")
 
     with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
         list(ex.map(work, list(rows.itertuples(index=False))))
     fh.close()
 
     total = max(1, sum(stats.values()))
-    print(f"\nkept={stats['kept']} leak={stats['leak']} lowscore={stats['lowscore']} "
+    print(f"\nkept={stats['kept']} leak={stats['leak']} "
+          f"prefilter={stats['prefilter']} lowscore={stats['lowscore']} "
           f"fail={stats['fail']}  (keep rate {100*stats['kept']/total:.1f}%)")
     print("SynthPert kept ~2% after filtering and still beat full-data training — "
           "a low keep rate is not a bug.")

@@ -1,0 +1,29 @@
+extends: default
+
+prompts: teacher/strict_v2
+
+teacher:
+  temperature: 0.45
+  max_tokens: 700
+
+critic:
+  min_score: 5
+  max_tokens: 120
+
+sampling:
+  n: 60
+  balance_classes: true
+  seed: 43
+
+filters:
+  min_chars: 180
+  require_gene_mentions: true
+  reject_patterns:
+    - '\bmay affect\b'
+    - '\bcould lead to\b'
+    - '\bvarious transcription factors\b'
+    - '\bvarious signaling pathways\b'
+    - '\bcellular stress signals\b'
+    - '\bcompensatory response\b'
+    - '\bhomeostasis\b'
+    - '\bdownstream effects\b'

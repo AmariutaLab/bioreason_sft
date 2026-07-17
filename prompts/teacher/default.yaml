@@ -29,8 +29,7 @@ prompt_de: |
   {context}
 
   TASK: In mouse BMDMs, CRISPRi knockdown of {pert} causes {gene} to be {meaning}.
-  Explain the mechanism that produces this specific outcome, including WHY the
-  effect is large enough to clear a |log2FC| >= log2(1.5) threshold at 5% FDR.
+  Explain the mechanism that produces this specific direction of effect.
   {rules}
 
 # 'none' needs its OWN prompt: explaining absence is a different argument, and a
@@ -89,70 +88,6 @@ leak_patterns:
   - '\bworking\s+backward'
   - '\bto\s+(?:explain|justify|rationali[sz]e)\s+(?:this|the)\s+(?:given\s+)?(?:answer|outcome|result)\b'
   - '\bthe\s+(?:stated|provided|expected)\s+(?:answer|outcome)\b'
-rules: |
-  Write a concise biological rationale that could help a smaller student model
-  learn the correct perturbation response. Use the supplied context when it is
-  relevant, but do not claim that missing evidence proves no effect. Do not say
-  that you were given the answer, do not mention labels or letters, and do not
-  use phrases such as "therefore the correct answer is". Reason from biology:
-  gene function, regulatory sign, pathway proximity, and uncertainty.
-
-prompt_de: |
-  You are creating a training rationale for a CRISPRi perturbation benchmark in
-  mouse macrophages.
-
-  Context:
-  {context}
-
-  Perturbed gene: {pert}
-  Target gene: {gene}
-  Observed response to rationalize: {meaning}
-
-  Rules:
-  {rules}
-
-  Write only the rationale, 3-6 sentences.
-
-prompt_none: |
-  You are creating a training rationale for a CRISPRi perturbation benchmark in
-  mouse macrophages.
-
-  Context:
-  {context}
-
-  Perturbed gene: {pert}
-  Target gene: {gene}
-  Observed response to rationalize: {meaning}
-
-  Rules:
-  {rules}
-
-  For a no-change case, explain why the perturbation may not strongly affect
-  this target in this context. Avoid empty statements like "no known link"; give
-  a concrete uncertainty-aware rationale. Write only the rationale, 3-6
-  sentences.
-
-critic: |
-  Score this rationale for whether it is useful training data for a student
-  model. Good rationales discuss specific gene biology or signed regulation and
-  do not leak that the answer was provided.
-
-  Perturbed gene: {pert}
-  Target gene: {gene}
-  Intended response: {meaning}
-  Rationale:
-  {trace}
-
-  Return JSON only: {{"score": 0-5, "reason": "short reason"}}
-
-leak_patterns:
-  - "given the answer"
-  - "provided answer"
-  - "known label"
-  - "correct label"
-  - "correct answer"
-  - "answer is [ABC]"
-  - "letter [ABC]"
-  - "class [ABC]"
-  - "therefore it is (up|down|none)"
-  - "must be classified as"
+  - '\bFDR\b'
+  - '\blog2\\s*fold\\s*change\b'
+  - '\blog2FC\b'

@@ -137,6 +137,7 @@ def main():
 
     out_dir = paths.run_dir("traces", args.out, create=True)
     out_file = out_dir / "traces.jsonl"
+    reject_file = out_dir / "rejects.jsonl"
     done = set()
     if out_file.exists():
         for line in out_file.read_text().splitlines():
@@ -149,6 +150,16 @@ def main():
     lock = threading.Lock()
     stats = {"kept": 0, "leak": 0, "prefilter": 0, "lowscore": 0, "fail": 0}
     fh = out_file.open("a")
+    rfh = reject_file.open("a")
+
+    def reject(reason, r, trace="", critic_score=None, critic_reason=""):
+        rec = {"id": f"{r.perturb_gene}_{r.target_gene}",
+               "pert": r.perturb_gene, "gene": r.target_gene,
+               "label": r.label, "letter": r.letter,
+               "reason": reason, "trace": trace,
+               "critic_score": critic_score, "critic_reason": critic_reason}
+        rfh.write(json.dumps(rec) + "\n")
+        rfh.flush()
 
     def work(r):
         rid = f"{r.perturb_gene}_{r.target_gene}"
@@ -164,16 +175,19 @@ def main():
         if not trace or len(trace) < cfg.filters.min_chars:
             with lock:
                 stats["fail"] += 1
+                reject("fail_or_short", r, trace or "")
             return
         ok, why_prefilter = quality_prefilter(trace, r.perturb_gene,
                                               r.target_gene, cfg)
         if not ok:
             with lock:
                 stats["prefilter"] += 1
+                reject(f"prefilter: {why_prefilter}", r, trace)
             return
         if leak_re and leak_re.search(trace):
             with lock:
                 stats["leak"] += 1
+                reject("leak", r, trace)
             return
         if cfg.critic.enabled:
             sc, why = critic_score(critic, P.critic, r.perturb_gene, r.target_gene,
@@ -183,6 +197,7 @@ def main():
         if sc < cfg.critic.min_score:
             with lock:
                 stats["lowscore"] += 1
+                reject("lowscore", r, trace, sc, why)
             return
         rec = {"id": rid, "pert": r.perturb_gene, "gene": r.target_gene,
                "label": r.label, "letter": r.letter, "reasoning": trace,
@@ -201,6 +216,7 @@ def main():
     with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
         list(ex.map(work, list(rows.itertuples(index=False))))
     fh.close()
+    rfh.close()
 
     total = max(1, sum(stats.values()))
     print(f"\nkept={stats['kept']} leak={stats['leak']} "

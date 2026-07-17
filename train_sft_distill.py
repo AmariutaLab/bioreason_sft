@@ -145,9 +145,9 @@ def main():
                                resume_id=args.wandb_id)
 
     trainer = SFTTrainer(
-        model=model, tokenizer=tokenizer, train_dataset=ds,
+        model=model, processing_class=tokenizer, train_dataset=ds,
         args=SFTConfig(
-            dataset_text_field="text", max_seq_length=m.max_seq_length,
+            dataset_text_field="text", max_length=m.max_seq_length,
             per_device_train_batch_size=t.batch,
             gradient_accumulation_steps=t.grad_accum,
             num_train_epochs=t.epochs, learning_rate=t.lr,

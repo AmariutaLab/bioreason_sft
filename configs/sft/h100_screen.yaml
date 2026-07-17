@@ -4,8 +4,10 @@ extends: h100_8b
 # the base model differs, but the trace-source ranking should be comparable.
 train:
   epochs: 1
+  max_steps: 25
   save_strategy: "no"
   save_total_limit: 1
 
 eval:
-  max_rows: 120
+  max_rows: 60
+  gen_max_new: 128

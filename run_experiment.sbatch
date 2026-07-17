@@ -113,12 +113,17 @@ export NUMEXPR_NUM_THREADS="$THREADS"
 
 pixi run -e "$PIXI_ENV" "$CHECK_TASK"
 
+RUN_CMD=()
+if [[ "${USE_SRUN:-0}" == "1" ]]; then
+  RUN_CMD=(srun)
+fi
+
 # ── run ──────────────────────────────────────────────────────────────────────
 # --resume is safe on a fresh run (no checkpoint -> starts from scratch), so
 # requeued jobs pick up where they left off automatically.
 if [[ "$STAGE" == *"sft"* ]]; then
   echo ">>> SFT: $SFT_RUN"
-  srun python train_sft_distill.py \
+  "${RUN_CMD[@]}" python train_sft_distill.py \
       --config "$SFT_CFG" \
       --traces "$TRACE_RUN" \
       --out    "$SFT_RUN" \
@@ -128,7 +133,7 @@ fi
 
 if [[ "$STAGE" == *"grpo"* ]]; then
   echo ">>> GRPO: $GRPO_RUN"
-  srun python train_grpo.py \
+  "${RUN_CMD[@]}" python train_grpo.py \
       --config "$GRPO_CFG" \
       --sft    "$SFT_RUN" \
       --out    "$GRPO_RUN" \

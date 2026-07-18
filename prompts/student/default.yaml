@@ -1,22 +1,53 @@
+# Prompts for the STUDENT model (used at SFT training, GRPO, and inference).
+# Everything the student ever sees is here. Changing this file changes the
+# experiment without touching source code.
+#
+# IMPORTANT: the student sees NO grounding/database text. Track C forbids tools
+# and external models at inference. Biological knowledge must be distilled into
+# the weights via traces, not injected as context. (SynthPert found injecting
+# pathway text at inference HURT by 0.07 AUROC via context saturation.)
+
+# Encodes the three things that matter: CRISPRi != knockout, the exact label
+# definition (so the model knows how wide "none" really is), and the prior.
 system: |
-  You are a careful computational biology model. Predict the transcriptional
-  response of a target gene after CRISPRi knockdown of a perturbation gene in
-  mouse bone marrow-derived macrophages. Reason briefly about gene function,
-  pathway relationship, regulatory direction, and uncertainty. Then give exactly
-  one answer letter.
+  You are an expert molecular biologist analyzing CRISPRi gene-perturbation
+  screens in mouse bone marrow-derived macrophages (BMDMs). The mechanism is
+  CRISPRi (transcriptional knockdown), NOT knockout: only direct transcriptional
+  targets and immediate downstream effects are detectable.
 
+  A gene is labelled up- or down-regulated ONLY if it passes 5% FDR
+  (Benjamini-Hochberg) AND |shrunken log2 fold-change| >= log2(1.5). Shrinkage
+  pulls weak effects toward zero, so the 'no significant effect' class is wide:
+  borderline targets of weak regulators are labelled C.
+
+  Reason step by step from specific gene function to a regulatory link to a
+  direction, then commit to one choice. Default to C unless a concrete mechanism
+  supports an effect above the threshold.
+
+# The official interface is multiple choice A/B/C (see mlgenx.parse_answer), not
+# the words up/down/none. Bonus: single letters are guaranteed single tokens.
+# Placeholders {pert} and {gene} are filled at runtime.
 question: |
-  Perturbation gene knocked down by CRISPRi: {pert}
-  Target gene to score: {gene}
+  In mouse bone marrow-derived macrophages, the gene {pert} is knocked down
+  using CRISPR interference (CRISPRi).
+  What is the effect on expression of {gene}?
 
-  Choose one:
-  A = target gene is up-regulated
-  B = target gene is down-regulated
-  C = target gene is not significantly changed
+  A) Knockdown of {pert} results in up-regulation of {gene}.
+  B) Knockdown of {pert} results in down-regulation of {gene}.
+  C) Knockdown of {pert} does not significantly affect {gene}.
 
+# The answer string format. The assistant turn is built as:
+#   think_open + reasoning + think_close + answer_open + letter_prefix
+#   + LETTER + answer_close + eos
+# and the inference prefix stops right before LETTER, so the logit read lands
+# exactly where training optimized.
 format:
-  think_open: "<think>\n"
-  think_close: "\n</think>\n"
-  answer_open: "<answer>"
-  letter_prefix: ""
-  answer_close: "</answer>"
+  think_open:    "<think>\n"
+  think_close:   "\n</think>\n"
+  answer_open:   "<answer>"
+  # letter_prefix separates the tag from the letter so greedy BPE cannot merge
+  # '>' + 'A' into one '>A' token (which silently breaks train/infer alignment).
+  # Task.resolve_letter_ids() verifies this at runtime and will pick another
+  # separator if this one merges for your tokenizer.
+  letter_prefix: " "
+  answer_close:  "</answer>"

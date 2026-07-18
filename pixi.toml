@@ -174,6 +174,8 @@ data = { cmd = "python download_data.py", description = "download Kaggle data ->
 
 grounding = { cmd = "python build_grounding.py --out default", depends-on = ["data"], description = "mygene + CollecTRI -> ../output/grounding/default" }
 
+diagnose-omnipath = { cmd = "python build_grounding.py --out _probe --diagnose", description = "is OmniPath slow/down (5xx) or is our request wrong (4xx)?" }
+
 traces-smoke = { cmd = "python build_traces.py --out smoke --config smoke", depends-on = ["grounding"], description = "30 traces. ALWAYS run this first and READ them." }
 
 traces = { cmd = "python build_traces.py --out default --config default", depends-on = ["grounding"], description = "full trace generation (~1-3h, resumable)" }

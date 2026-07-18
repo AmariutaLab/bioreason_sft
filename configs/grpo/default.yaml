@@ -1,3 +1,69 @@
+# Stage 2: GRPO on top of the SFT-distilled checkpoint.
+# Warm start is REQUIRED, not optional: RL alone does not add new reasoning
+# priors to a student; SFT on traces adds the primitives that RL then explores.
+
+sft_run: default             # reads output/sft/<this>/adapter
+grounding_run: default       # for the CollecTRI verifier
+prompts: student/default     # MUST match the SFT run's prompts
+
+model:
+  name: unsloth/Qwen3-4B-Thinking-2507   # must match the SFT base
+  max_seq_length: 1536
+  load_in_4bit: true
+
+grpo:
+  num_generations: 6         # G samples per prompt. More = better advantage
+                             # estimate, linearly more compute.
+  beta: 0.04                 # KL penalty to the reference model. THE CALIBRATION
+                             # GUARD — raise it if val score collapses while
+                             # reward climbs.
+  lr: 5.0e-6                 # RL wants a much smaller LR than SFT
+  max_steps: 400
+  temperature: 0.9
+  max_prompt_length: 768
+  max_completion_length: 384
+  grad_accum: 2
+  logging_steps: 5
+
+rewards:
+  # Mirrors the metric's structure: you cannot optimize a rank metric per-sample,
+  # but you can split credit the way DE/DIR splits it.
+  format:
+    enabled: true
+    weight: 0.15             # small: just keeps <think>/<answer> parseable
+  correctness:
+    enabled: true
+    weight: 1.0              # the primary signal
+    # true=none : all credit on the DE call
+    # true=up/down: 0.5 for DE right + 0.5 for direction right
+    #   -> "moved, wrong sign" scores 0.5, exactly the DE/DIR split
+    partial_de_credit: 0.5
+    # 'none' is 55% of rows: "always answer C" maximizes naive reward and drives
+    # DIR-AUROC to 0.5. Balanced buffer + inverse-frequency weights prevent it.
+    class_balance: true
+  verifier:
+    # rbio1-style soft verifier from CollecTRI signed edges. You HAVE labels, so
+    # this is not needed for correctness — its value is rewarding reasoning that
+    # is consistent with curated biology. Low weight on purpose: a heavy verifier
+    # caps the student at the verifier's accuracy and invites reward hacking.
+    enabled: true
+    weight: 0.2
+    wrong_penalty: -0.5      # penalty when the model contradicts a curated edge
+    min_direction_acc: 0.6   # auto-disable if the verifier validates below this
+
+eval:
+  # The REAL stopping signal. Reward can rise while AUROC falls (calibration
+  # collapse). Watch this, not the reward curve.
+  every: 50                  # steps
+  n: 200                     # val rows per eval (subsample for speed)
+  gen_max_new: 320
+  infer_batch: 8
+  save_best: true            # writes output/grpo/<run>/best/
+
+split:
+  seed: 42
+  val_pert_frac: 0.20
+  val_gene_frac: 0.25
 sft_run: qwen4b
 prompts: student/default
 grounding_run: default

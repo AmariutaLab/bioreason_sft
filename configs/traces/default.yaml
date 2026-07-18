@@ -1,3 +1,17 @@
+# Generate + critic-filter synthetic reasoning traces (SynthPert Approach 2).
+
+grounding_run: default        # reads output/grounding/<this>/grounding.json
+prompts: teacher/default      # prompts/teacher/default.yaml
+
+teacher:
+  # Any OpenAI-compatible endpoint: OpenAI, DeepSeek, OpenRouter, Together, or a
+  # local vLLM server. Prefer an OPEN teacher: most commercial APIs restrict
+  # using outputs to train competing models, and this work gets published.
+  model: gpt-4o-mini
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY    # name of the env var holding the key
+  temperature: 0.7               # some diversity; traces are filtered anyway
+  max_tokens: 1200
 prompts: teacher/default
 grounding_run: default
 workers: 6
@@ -13,22 +27,27 @@ teacher:
 
 critic:
   enabled: true
-  model: null
-  base_url: null
-  temperature: 0.0
-  max_tokens: 220
-  min_score: 4
-
-filters:
-  leak_filter: true
-  min_chars: 160
+  model: null          # null = reuse the teacher model
+  base_url: null       # null = reuse the teacher base_url
+  min_score: 5         # keep only 5/5. Loosen to 4 if the keep rate is tiny.
+  temperature: 0.0     # grading should be deterministic
+  max_tokens: 100
 
 sampling:
-  n: 1500
-  seed: 42
+  n: 2000              # rows to ATTEMPT (not rows kept)
+  # Balance classes: 'none' is 55% of data and 'down' only 14%. Proportional
+  # sampling wastes teacher budget on the easy majority and starves 'down'.
   balance_classes: true
+  seed: 42
+  # Only train-split rows ever get traces — the blocked val must stay clean.
 
-split:
+filters:
+  leak_filter: true    # hard-reject backward reasoning (patterns in prompts yaml)
+  min_chars: 80        # discard stub responses
+
+split:                 # MUST match the trainers, or traces leak into val
   seed: 42
   val_pert_frac: 0.20
   val_gene_frac: 0.25
+
+workers: 8             # concurrent API calls

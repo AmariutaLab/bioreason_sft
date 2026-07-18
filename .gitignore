@@ -6,3 +6,4 @@ __pycache__/
 .pixi/
 cache/
 mnt/
+unsloth_compiled_cache/

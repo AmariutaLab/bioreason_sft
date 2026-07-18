@@ -1,0 +1,13 @@
+extends: h100_8b
+
+# Lean H100 QLoRA path: standard Transformers + PEFT + bitsandbytes, without
+# Unsloth. Keep the effective batch at 16 while reducing accumulation overhead.
+model:
+  backend: transformers
+  load_in_4bit: true
+
+train:
+  batch: 8
+  grad_accum: 2
+  optim: paged_adamw_8bit
+  bf16: true

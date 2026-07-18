@@ -1,6 +1,7 @@
 extends: default
 
 model:
+  name: Qwen/Qwen3-8B
   load_in_4bit: false
 
 train:

@@ -1,0 +1,6 @@
+extends: v100_screen
+
+# Intermediate V100 screen: same small validation subset as v100_screen, but
+# enough optimizer steps to see whether strict-medium benefits from more SFT.
+train:
+  max_steps: 75

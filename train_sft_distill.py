@@ -122,11 +122,31 @@ def main():
     empty = bool(cfg.get_path("ablation.empty_reasoning", False))
     if empty:
         print("ABLATION: empty reasoning (the SynthPert label-only control)")
-    texts = [task.train_text(tokenizer, r.pert, r.gene,
-                             "" if empty else r.reasoning, r.letter)
-             for r in tdf.itertuples(index=False)]
-    ds = Dataset.from_dict({"text": texts})
-    print("\n--- sample target (tail) ---\n" + texts[0][-380:] + "\n---")
+    def masked_example(r):
+        reasoning = "" if empty else r.reasoning
+        text = task.train_text(tokenizer, r.pert, r.gene, reasoning, r.letter)
+        prefix = task.think_prompt(tokenizer, r.pert, r.gene)
+        if not text.startswith(prefix):
+            raise ValueError("Task invariant broken: think_prompt is not a train_text prefix")
+        response = text[len(prefix):]
+        prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+        response_ids = tokenizer(response, add_special_tokens=False)["input_ids"]
+        keep_response = max(0, m.max_seq_length - len(prefix_ids))
+        response_ids = response_ids[:keep_response]
+        ids = prefix_ids + response_ids
+        labels = [-100] * len(prefix_ids) + response_ids
+        return {"input_ids": ids, "labels": labels}
+
+    records = [masked_example(r) for r in tdf.itertuples(index=False)]
+    ds = Dataset.from_list(records)
+    supervised = sum(sum(x != -100 for x in r["labels"]) for r in records)
+    total = sum(len(r["labels"]) for r in records)
+    sample_text = task.train_text(tokenizer, tdf.iloc[0].pert, tdf.iloc[0].gene,
+                                  "" if empty else tdf.iloc[0].reasoning,
+                                  tdf.iloc[0].letter)
+    print("\n--- sample target (tail) ---\n" + sample_text[-380:] + "\n---")
+    print(f"response-only labels: {supervised}/{total} tokens "
+          f"({100*supervised/max(1,total):.1f}%)")
 
     t = cfg.train
     max_steps = int(t.get("max_steps", -1) or -1)
@@ -152,7 +172,7 @@ def main():
     trainer = SFTTrainer(
         model=model, processing_class=tokenizer, train_dataset=ds,
         args=SFTConfig(
-            dataset_text_field="text", max_length=m.max_seq_length,
+            max_length=m.max_seq_length,
             per_device_train_batch_size=t.batch,
             gradient_accumulation_steps=t.grad_accum,
             num_train_epochs=t.epochs, learning_rate=t.lr,
@@ -165,9 +185,11 @@ def main():
             bf16=bf16, fp16=not bf16,
             report_to="wandb" if run_id else "none"),
     )
-    # loss only on the assistant turn (trace + answer), not the long prompt
-    trainer = modeling.responses_only_trainer(
-        trainer, instruction_part=m.instruction_part, response_part=m.response_part)
+    # The dataset already has response-only labels. The Unsloth helper is kept
+    # as a no-op fallback for older runs but is not required on Transformers.
+    if backend == "unsloth":
+        trainer = modeling.responses_only_trainer(
+            trainer, instruction_part=m.instruction_part, response_part=m.response_part)
     trainer.train(resume_from_checkpoint=str(ckpt) if ckpt else None)
 
     adapter = paths.sft_adapter(args.out)

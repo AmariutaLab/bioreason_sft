@@ -1,0 +1,8 @@
+extends: strict_smoke
+
+# Medium-size API run after strict_smoke has been inspected by hand.
+# At the current keep rate, 600 attempts should yield a few hundred traces.
+sampling:
+  n: 600
+  balance_classes: true
+  seed: 45

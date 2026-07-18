@@ -77,6 +77,23 @@ def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg):
         return 0, "unparseable"
 
 
+def quality_prefilter(trace, pert, gene, cfg):
+    """Cheap deterministic QA before spending critic calls.
+
+    The LLM critic can be over-generous. These checks catch failure modes that
+    are unambiguously bad training data: the rationale does not mention the
+    requested genes, or it uses banned generic/meta phrases.
+    """
+    if cfg.get_path("filters.require_gene_mentions", False):
+        for sym in (pert, gene):
+            if not re.search(rf"\b{re.escape(str(sym))}\b", trace, re.I):
+                return False, f"missing {sym}"
+    for pat in cfg.get_path("filters.reject_patterns", []) or []:
+        if re.search(pat, trace, re.I):
+            return False, f"reject pattern: {pat[:35]}"
+    return True, ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="traces run name")
@@ -120,6 +137,7 @@ def main():
 
     out_dir = paths.run_dir("traces", args.out, create=True)
     out_file = out_dir / "traces.jsonl"
+    reject_file = out_dir / "rejects.jsonl"
     done = set()
     if out_file.exists():
         for line in out_file.read_text().splitlines():
@@ -130,8 +148,18 @@ def main():
         print(f"Resuming: {len(done)} traces already written")
 
     lock = threading.Lock()
-    stats = {"kept": 0, "leak": 0, "lowscore": 0, "fail": 0}
+    stats = {"kept": 0, "leak": 0, "prefilter": 0, "lowscore": 0, "fail": 0}
     fh = out_file.open("a")
+    rfh = reject_file.open("a")
+
+    def reject(reason, r, trace="", critic_score=None, critic_reason=""):
+        rec = {"id": f"{r.perturb_gene}_{r.target_gene}",
+               "pert": r.perturb_gene, "gene": r.target_gene,
+               "label": r.label, "letter": r.letter,
+               "reason": reason, "trace": trace,
+               "critic_score": critic_score, "critic_reason": critic_reason}
+        rfh.write(json.dumps(rec) + "\n")
+        rfh.flush()
 
     def work(r):
         rid = f"{r.perturb_gene}_{r.target_gene}"
@@ -147,10 +175,19 @@ def main():
         if not trace or len(trace) < cfg.filters.min_chars:
             with lock:
                 stats["fail"] += 1
+                reject("fail_or_short", r, trace or "")
+            return
+        ok, why_prefilter = quality_prefilter(trace, r.perturb_gene,
+                                              r.target_gene, cfg)
+        if not ok:
+            with lock:
+                stats["prefilter"] += 1
+                reject(f"prefilter: {why_prefilter}", r, trace)
             return
         if leak_re and leak_re.search(trace):
             with lock:
                 stats["leak"] += 1
+                reject("leak", r, trace)
             return
         if cfg.critic.enabled:
             sc, why = critic_score(critic, P.critic, r.perturb_gene, r.target_gene,
@@ -160,6 +197,7 @@ def main():
         if sc < cfg.critic.min_score:
             with lock:
                 stats["lowscore"] += 1
+                reject("lowscore", r, trace, sc, why)
             return
         rec = {"id": rid, "pert": r.perturb_gene, "gene": r.target_gene,
                "label": r.label, "letter": r.letter, "reasoning": trace,
@@ -172,14 +210,17 @@ def main():
             n = sum(stats.values())
             if n % 25 == 0:
                 print(f"  {n}/{len(rows)} kept={stats['kept']} leak={stats['leak']} "
-                      f"low={stats['lowscore']} fail={stats['fail']}")
+                      f"prefilter={stats['prefilter']} low={stats['lowscore']} "
+                      f"fail={stats['fail']}")
 
     with ThreadPoolExecutor(max_workers=cfg.workers) as ex:
         list(ex.map(work, list(rows.itertuples(index=False))))
     fh.close()
+    rfh.close()
 
     total = max(1, sum(stats.values()))
-    print(f"\nkept={stats['kept']} leak={stats['leak']} lowscore={stats['lowscore']} "
+    print(f"\nkept={stats['kept']} leak={stats['leak']} "
+          f"prefilter={stats['prefilter']} lowscore={stats['lowscore']} "
           f"fail={stats['fail']}  (keep rate {100*stats['kept']/total:.1f}%)")
     print("SynthPert kept ~2% after filtering and still beat full-data training — "
           "a low keep rate is not a bug.")

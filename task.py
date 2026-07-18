@@ -58,12 +58,14 @@ class Task:
 
     def think_prompt(self, tokenizer, pert, gene) -> str:
         """Prompt for GENERATING reasoning (model continues inside <think>)."""
-        return self.chat_head(tokenizer, pert, gene) + self.think_open
+        head = self.chat_head(tokenizer, pert, gene)
+        return head if head.endswith(self.think_open) else head + self.think_open
 
     def answer_prefix(self, tokenizer, pert, gene, reasoning) -> str:
         """Ends exactly where the answer letter goes. Read logits here."""
-        return (self.chat_head(tokenizer, pert, gene)
-                + self.think_open + reasoning.strip() + self.think_close
+        head = self.chat_head(tokenizer, pert, gene)
+        start = head if head.endswith(self.think_open) else head + self.think_open
+        return (start + reasoning.strip() + self.think_close
                 + self.answer_open + self.letter_prefix)
 
     def train_text(self, tokenizer, pert, gene, reasoning, letter) -> str:

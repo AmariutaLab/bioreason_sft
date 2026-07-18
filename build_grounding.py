@@ -420,9 +420,10 @@ def fetch_collectri(cfg, cache_dir=None):
 
 
 # ── per-row features + teacher context ─────────────────────────────────────
-def edge_features(pert, gene, edges, tfs, targets_of):
+def edge_features(pert, gene, edges, tfs, regulators_of, targets_by_tf):
     P, G = pert.upper(), gene.upper()
     mor = edges.get((P, G))
+    shared = sorted(regulators_of.get(P, set()) & regulators_of.get(G, set()))
     return {
         "pert_is_tf": int(P in tfs),
         "has_edge": int(mor is not None),
@@ -431,8 +432,10 @@ def edge_features(pert, gene, edges, tfs, targets_of):
         #   activator (mor>0) knocked down -> target down -> letter B
         #   repressor (mor<0) knocked down -> target up   -> letter A
         "expected_letter": (("B" if mor > 0 else "A") if mor is not None else None),
-        "shared_regulators": len(targets_of.get(P, set())
-                                 & targets_of.get(G, set())),
+        "shared_regulators": len(shared),
+        "shared_regulator_genes": shared,
+        "pert_regulon_genes": sorted(targets_by_tf.get(P, set())),
+        "target_upstream_tfs": sorted(regulators_of.get(G, set())),
     }
 
 
@@ -469,7 +472,26 @@ def context_block(pert, gene, ann, f, cfg):
         else:
             lines.append(f"REGULATORY EDGE: none curated; {pert} is not a known TF.")
     if c.include_shared_regulators and f["shared_regulators"]:
-        lines.append(f"Shared upstream regulators: {f['shared_regulators']}")
+        shared = f.get("shared_regulator_genes", [])
+        shown = ", ".join(shared[:c.get("max_regulon_genes", 12)])
+        suffix = "" if len(shared) <= c.get("max_regulon_genes", 12) \
+            else f" (+{len(shared) - c.get('max_regulon_genes', 12)} more)"
+        lines.append(f"Shared upstream regulators: {shown}{suffix}")
+    if c.get("include_regulon_summary", False):
+        n = c.get("max_regulon_genes", 12)
+        regulon = f.get("pert_regulon_genes", [])
+        upstream = f.get("target_upstream_tfs", [])
+        if f["pert_is_tf"] and regulon:
+            shown = ", ".join(regulon[:n])
+            suffix = "" if len(regulon) <= n else f" (+{len(regulon) - n} more)"
+            lines.append(f"CURATED REGULON SUMMARY: {pert} has curated signed "
+                         f"CollecTRI targets among the task genes: {shown}{suffix}.")
+        if upstream:
+            shown = ", ".join(upstream[:n])
+            suffix = "" if len(upstream) <= n else f" (+{len(upstream) - n} more)"
+            lines.append(f"TARGET UPSTREAM TF SUMMARY: curated signed CollecTRI "
+                         f"regulators of {gene} among the task genes: "
+                         f"{shown}{suffix}.")
     return "\n".join(lines)
 
 
@@ -512,14 +534,17 @@ def main():
 
     print("Fetching CollecTRI signed regulons ...")
     edges, tfs = fetch_collectri(cfg, cache_dir=out_dir / "cache")
-    targets_of = {}
+    regulators_of = {}
+    targets_by_tf = {}
     for (s, t) in edges:
-        targets_of.setdefault(t, set()).add(s)
+        regulators_of.setdefault(t, set()).add(s)
+        targets_by_tf.setdefault(s, set()).add(t)
 
     rows = {}
     for df in (train, test):
         for r in df.itertuples(index=False):
-            f = edge_features(r.perturb_gene, r.target_gene, edges, tfs, targets_of)
+            f = edge_features(r.perturb_gene, r.target_gene, edges, tfs,
+                              regulators_of, targets_by_tf)
             rows[f"{r.perturb_gene}_{r.target_gene}"] = {
                 "pert": r.perturb_gene, "gene": r.target_gene, "features": f,
                 "context": context_block(r.perturb_gene, r.target_gene, ann, f, cfg)}

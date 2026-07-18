@@ -1,0 +1,8 @@
+extends: strict_smoke
+
+# Larger strict API run after strict-medium became the best local screen.
+# Uses a different seed from strict_medium to reduce overlap.
+sampling:
+  n: 2000
+  balance_classes: true
+  seed: 46

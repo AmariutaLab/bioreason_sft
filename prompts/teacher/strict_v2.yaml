@@ -1,0 +1,92 @@
+# Stricter teacher/critic prompt for high-quality trace generation.
+
+rules: |
+  Write evidence-constrained biological reasoning. Hard rules:
+  - Mention both {pert} and {gene} by name.
+  - Use concrete molecular function from the context when available.
+  - Do not invent direct regulation. If no direct edge or clear pathway exists,
+    state uncertainty and give the weakest plausible explanation.
+  - Avoid generic phrases unless tied to the genes: "cellular stress response",
+    "signaling pathways", "transcription factors", "compensatory response",
+    "homeostasis", "inflammatory response", and "downstream effects".
+  - Do not mention labels, answer choices, FDR, log2 fold-change thresholds,
+    the training screen, databases, annotations, GO, or that an answer was
+    provided.
+  - Do not begin by restating that knockdown caused up-regulation,
+    down-regulation, or no significant change. Explain gene functions and
+    evidence first, then end cautiously.
+  - Do not use "significant", "observed", or "compensatory mechanism" language.
+  - Prefer one short causal chain over broad pathway prose.
+  - Output only the rationale in 3-5 sentences.
+
+prompt_de: |
+  Context:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi knockdown of {pert} causes
+  {gene} to be {meaning}.
+
+  Explain the most evidence-supported forward mechanism for this direction.
+  If the context does not support a concrete mechanism, say the evidence is weak
+  and give a cautious, gene-specific hypothesis rather than a confident story.
+
+  {rules}
+
+prompt_none: |
+  Context:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi knockdown of {pert} leaves
+  {gene} NOT significantly changed.
+
+  Explain the most evidence-supported reason for no detectable effect. Prefer
+  pathway separation, different compartment/function, weak indirect coupling,
+  redundancy, or lack of transcriptional connection. Do not merely say "no known
+  link"; make the uncertainty explicit and gene-specific.
+
+  {rules}
+
+critic: |
+  You are filtering biological rationales for factuality before they are used
+  as supervised training data. Do not infer or reward the final answer. Grade
+  only whether the rationale is specific, context-supported, and honest.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+
+  RATIONALE:
+  {trace}
+
+  Score 0-5:
+  5 = names both genes; uses concrete function for both or an explicit signed
+      regulatory edge; gives a plausible short mechanism; is cautious when
+      evidence is weak; no forbidden/meta language.
+  4 = useful and mostly specific, but one step is underspecified.
+  3 = partly useful but mostly generic pathway prose.
+  2 = outcome restatement, generic speculation, or only one gene discussed.
+  1 = fabricated direct regulation, broad unsupported mechanism, or serious
+      biological hand-waving.
+  0 = leaks label/answer/source metadata, mentions thresholds/FDR, contradicts
+      itself, or is not about the requested genes.
+
+  Be harsh. If a rationale could apply to hundreds of gene pairs, score <= 2.
+  If it invents a direct edge for a poorly characterized gene, score <= 1.
+  If it claims significance, observed effects, log fold-change, or benchmark
+  threshold information, score 0.
+  Reply with ONLY JSON: {{"score": <int>, "reason": "<8 words>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\btraining screen\b'
+  - '\bFDR\b'
+  - '\bsignificant(?:ly)?\b'
+  - '\bobserved\b'
+  - '\bcompensatory mechanism\b'
+  - '\blog2\\s*fold\\s*change\b'
+  - '\blog2FC\b'
+  - '\bthe provided context\b'
+  - '\bGO terms?\b'

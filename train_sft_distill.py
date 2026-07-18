@@ -20,6 +20,10 @@ import numpy as np
 import pandas as pd
 import torch
 from datasets import Dataset
+
+import hf_import_shim
+
+hf_import_shim.patch_importlib_metadata_for_trl()
 from trl import SFTTrainer, SFTConfig
 
 import common
@@ -118,14 +122,35 @@ def main():
     empty = bool(cfg.get_path("ablation.empty_reasoning", False))
     if empty:
         print("ABLATION: empty reasoning (the SynthPert label-only control)")
-    texts = [task.train_text(tokenizer, r.pert, r.gene,
-                             "" if empty else r.reasoning, r.letter)
-             for r in tdf.itertuples(index=False)]
-    ds = Dataset.from_dict({"text": texts})
-    print("\n--- sample target (tail) ---\n" + texts[0][-380:] + "\n---")
+    def masked_example(r):
+        reasoning = "" if empty else r.reasoning
+        text = task.train_text(tokenizer, r.pert, r.gene, reasoning, r.letter)
+        prefix = task.think_prompt(tokenizer, r.pert, r.gene)
+        if not text.startswith(prefix):
+            raise ValueError("Task invariant broken: think_prompt is not a train_text prefix")
+        response = text[len(prefix):]
+        prefix_ids = tokenizer(prefix, add_special_tokens=False)["input_ids"]
+        response_ids = tokenizer(response, add_special_tokens=False)["input_ids"]
+        keep_response = max(0, m.max_seq_length - len(prefix_ids))
+        response_ids = response_ids[:keep_response]
+        ids = prefix_ids + response_ids
+        labels = [-100] * len(prefix_ids) + response_ids
+        return {"input_ids": ids, "labels": labels}
+
+    records = [masked_example(r) for r in tdf.itertuples(index=False)]
+    ds = Dataset.from_list(records)
+    supervised = sum(sum(x != -100 for x in r["labels"]) for r in records)
+    total = sum(len(r["labels"]) for r in records)
+    sample_text = task.train_text(tokenizer, tdf.iloc[0].pert, tdf.iloc[0].gene,
+                                  "" if empty else tdf.iloc[0].reasoning,
+                                  tdf.iloc[0].letter)
+    print("\n--- sample target (tail) ---\n" + sample_text[-380:] + "\n---")
+    print(f"response-only labels: {supervised}/{total} tokens "
+          f"({100*supervised/max(1,total):.1f}%)")
 
     t = cfg.train
-    steps = math.ceil(len(ds) / (t.batch * t.grad_accum)) * t.epochs
+    max_steps = int(t.get("max_steps", -1) or -1)
+    steps = max_steps if max_steps > 0 else math.ceil(len(ds) / (t.batch * t.grad_accum)) * t.epochs
     warm = max(1, int(steps * t.warmup_frac))
     print(f"steps={steps} warmup={warm}")
 
@@ -145,12 +170,13 @@ def main():
                                resume_id=args.wandb_id)
 
     trainer = SFTTrainer(
-        model=model, tokenizer=tokenizer, train_dataset=ds,
+        model=model, processing_class=tokenizer, train_dataset=ds,
         args=SFTConfig(
-            dataset_text_field="text", max_seq_length=m.max_seq_length,
+            max_length=m.max_seq_length,
             per_device_train_batch_size=t.batch,
             gradient_accumulation_steps=t.grad_accum,
             num_train_epochs=t.epochs, learning_rate=t.lr,
+            max_steps=max_steps,
             warmup_steps=warm, lr_scheduler_type="cosine",
             logging_steps=t.logging_steps, optim=t.optim,
             weight_decay=t.weight_decay, seed=cfg.split.seed,
@@ -159,9 +185,11 @@ def main():
             bf16=bf16, fp16=not bf16,
             report_to="wandb" if run_id else "none"),
     )
-    # loss only on the assistant turn (trace + answer), not the long prompt
-    trainer = modeling.responses_only_trainer(
-        trainer, instruction_part=m.instruction_part, response_part=m.response_part)
+    # The dataset already has response-only labels. The Unsloth helper is kept
+    # as a no-op fallback for older runs but is not required on Transformers.
+    if backend == "unsloth":
+        trainer = modeling.responses_only_trainer(
+            trainer, instruction_part=m.instruction_part, response_part=m.response_part)
     trainer.train(resume_from_checkpoint=str(ckpt) if ckpt else None)
 
     adapter = paths.sft_adapter(args.out)
@@ -174,10 +202,17 @@ def main():
     if cfg.eval.enabled:
         modeling.prepare_for_inference(model, backend)
         model.eval()
-        print("\nScoring blocked val (generate reasoning -> read letter logits) ...")
-        vl, vtr = score_rows(model, tokenizer, task, va, letter_ids,
+        max_eval_rows = int(cfg.eval.get("max_rows", 0) or 0)
+        if max_eval_rows > 0 and len(va) > max_eval_rows:
+            va_eval = va.sample(max_eval_rows, random_state=cfg.split.seed)
+            print(f"\nScoring blocked val subset ({len(va_eval)}/{len(va)} rows) "
+                  "(generate reasoning -> read letter logits) ...")
+        else:
+            va_eval = va
+            print("\nScoring blocked val (generate reasoning -> read letter logits) ...")
+        vl, vtr = score_rows(model, tokenizer, task, va_eval, letter_ids,
                              cfg.eval.gen_max_new, cfg.eval.infer_batch)
-        best_T, best = common.tune_temperature(vl, va["label"].values,
+        best_T, best = common.tune_temperature(vl, va_eval["label"].values,
                                                tuple(cfg.eval.temperature_grid))
         print(f"\nBLOCKED-VAL SCORE = {best:.4f} (T={best_T})")
         print("\n--- example generated reasoning ---\n" + vtr[0][:600])

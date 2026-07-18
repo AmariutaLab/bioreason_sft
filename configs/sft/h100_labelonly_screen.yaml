@@ -1,0 +1,4 @@
+extends: h100_screen
+
+ablation:
+  empty_reasoning: true

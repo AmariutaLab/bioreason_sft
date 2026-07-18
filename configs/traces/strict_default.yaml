@@ -1,0 +1,5 @@
+extends: strict_smoke
+
+sampling:
+  n: 2000
+  seed: 42

@@ -1,0 +1,14 @@
+extends: v100_4b
+
+# Cheap V100 screening run for comparing trace sources before spending a full
+# allocation. Use the same blocked split and model, but train for one epoch and
+# score a fixed validation subset.
+train:
+  epochs: 1
+  max_steps: 25
+  save_strategy: "no"
+  save_total_limit: 1
+
+eval:
+  max_rows: 60
+  gen_max_new: 128

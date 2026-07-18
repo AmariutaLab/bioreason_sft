@@ -1,0 +1,12 @@
+extends: strict_smoke
+
+sampling:
+  n: 12
+  balance_classes: true
+  seed: 44
+
+critic:
+  min_score: 4
+
+filters:
+  min_chars: 140

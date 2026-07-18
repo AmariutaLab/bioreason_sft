@@ -49,21 +49,5 @@ context:
   include_go: true
   include_edge: true              # the signed CollecTRI statement
   include_shared_regulators: true # weak "both downstream of same TF" signal
-species: mouse
-
-sources:
-  mygene:
-    enabled: true
-    batch_size: 100
-    sleep: 0.2
-    max_summary_chars: 900
-    max_go_terms: 8
-  collectri:
-    enabled: true
-    method: http
-
-context:
-  include_summary: true
-  include_go: true
-  include_edge: true
-  include_shared_regulators: true
+  include_regulon_summary: true   # top curated TF targets/upstream regulators
+  max_regulon_genes: 12

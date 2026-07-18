@@ -33,30 +33,45 @@
 set -euo pipefail
 
 # ── experiment matrix ────────────────────────────────────────────────────────
-# One line per experiment: "STAGE|SFT_CONFIG|SFT_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"
+# One line per experiment:
+#   "STAGE|SFT_CONFIG|SFT_RUN|TRACES_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"
 #   STAGE       : sft | grpo | sft+grpo
+#   TRACES_RUN  : output/traces/<run>/traces.jsonl for SFT; blank uses default
 #   EXTRA       : optional "--set key=val" overrides, space separated
 # Edit this list; do NOT edit the python source to change an experiment.
 EXPERIMENTS=(
-  # V100 path available now under csd832.
-  "sft|v100_4b|qwen4b-v100||| "
-  "sft|label_only_ablation|abl-labelonly||| "
+  # V100 path available now under csd832. Indices 0-2 are the cheap baseline
+  # screen recommended before spending on full runs.
+  "sft|v100_labelonly_screen|screen-labelonly|label-default||| "
+  "sft|v100_screen|screen-current|default||| "
+  "sft|v100_screen|screen-cleaned|strict-default||| "
+  "sft|v100_4b|qwen4b-v100|label-default||| "
   # H100 path for later NAIRR access. Submit with:
   #   sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 \
-  #     --array=2-3 --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100,TRACES_RUN=default run_experiment.sbatch
-  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
-  "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
+  #     --array=4-6 --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100 run_experiment.sbatch
+  "sft|h100_labelonly_screen|h100-screen-labelonly|label-default||| "
+  "sft|h100_screen|h100-screen-current|default||| "
+  "sft|h100_screen|h100-screen-cleaned|strict-default||| "
+  # Full H100 candidates after the screen chooses a trace source.
+  "sft+grpo|h100_8b|qwen8b|default|h100|qwen8b-grpo|"
+  "sft+grpo|h100_8b|qwen8b-r64|default|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 
-TRACES_RUN="${TRACES_RUN:-default}"     # override: TRACES_RUN=v2 sbatch ...
+TRACES_RUN_DEFAULT="${TRACES_RUN:-label-default}"
 
 IDX=${SLURM_ARRAY_TASK_ID:-0}
-IFS='|' read -r STAGE SFT_CFG SFT_RUN GRPO_CFG GRPO_RUN EXTRA <<< "${EXPERIMENTS[$IDX]}"
+IFS='|' read -r STAGE SFT_CFG SFT_RUN TRACE_RUN GRPO_CFG GRPO_RUN EXTRA <<< "${EXPERIMENTS[$IDX]}"
+TRACE_RUN="${TRACE_RUN:-$TRACES_RUN_DEFAULT}"
+SFT_CFG="${SFT_CFG_OVERRIDE:-$SFT_CFG}"
+SFT_RUN="${SFT_RUN_OVERRIDE:-$SFT_RUN}"
+TRACE_RUN="${TRACE_RUN_OVERRIDE:-$TRACE_RUN}"
+GRPO_CFG="${GRPO_CFG_OVERRIDE:-$GRPO_CFG}"
+GRPO_RUN="${GRPO_RUN_OVERRIDE:-$GRPO_RUN}"
 
 echo "=================================================="
 echo "array task : $IDX"
 echo "stage      : $STAGE"
-echo "traces     : $TRACES_RUN"
+echo "traces     : $TRACE_RUN"
 echo "sft        : config=$SFT_CFG run=$SFT_RUN"
 echo "grpo       : config=$GRPO_CFG run=$GRPO_RUN"
 echo "extra      : $EXTRA"
@@ -77,24 +92,40 @@ module load cuda/12.6.3 || module load cuda/11.8.0 || true
 # and the exact same pixi.lock the login node used for trace generation.
 export PIXI_HOME="${PIXI_HOME:-$HOME/.pixi}"
 export PATH="$PIXI_HOME/bin:$PATH"
+export CONDA_OVERRIDE_CUDA="${CONDA_OVERRIDE_CUDA:-12.4}"
+export PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-${TMPDIR:-/scratch/$USER/job_$SLURM_JOB_ID}/pixi-cache}"
 PIXI_ENV="${PIXI_ENV:-default}"
 CHECK_TASK="${CHECK_TASK:-check-gpu-v100}"
 eval "$(pixi shell-hook -e "$PIXI_ENV")"
 
 # pixi's [activation.env] already sets TOKENIZERS_PARALLELISM and HF_HOME.
+# Keep numerical libraries inside the Slurm CPU allocation. This also prevents
+# OpenBLAS import-time allocation failures on shared nodes.
+THREADS="${SLURM_CPUS_PER_TASK:-1}"
+export OMP_NUM_THREADS="$THREADS"
+export OPENBLAS_NUM_THREADS="$THREADS"
+export MKL_NUM_THREADS="$THREADS"
+export NUMEXPR_NUM_THREADS="$THREADS"
+
+# pixi's [activation.env] also sets conservative defaults for interactive use.
 # For wandb use: -e wandb, and export WANDB_API_KEY (or add it as a cluster secret).
 # eval "$(pixi shell-hook -e wandb)"
 
 pixi run -e "$PIXI_ENV" "$CHECK_TASK"
+
+RUN_CMD=()
+if [[ "${USE_SRUN:-0}" == "1" ]]; then
+  RUN_CMD=(srun)
+fi
 
 # ── run ──────────────────────────────────────────────────────────────────────
 # --resume is safe on a fresh run (no checkpoint -> starts from scratch), so
 # requeued jobs pick up where they left off automatically.
 if [[ "$STAGE" == *"sft"* ]]; then
   echo ">>> SFT: $SFT_RUN"
-  srun python train_sft_distill.py \
+  "${RUN_CMD[@]}" python train_sft_distill.py \
       --config "$SFT_CFG" \
-      --traces "$TRACES_RUN" \
+      --traces "$TRACE_RUN" \
       --out    "$SFT_RUN" \
       --resume \
       $EXTRA
@@ -102,7 +133,7 @@ fi
 
 if [[ "$STAGE" == *"grpo"* ]]; then
   echo ">>> GRPO: $GRPO_RUN"
-  srun python train_grpo.py \
+  "${RUN_CMD[@]}" python train_grpo.py \
       --config "$GRPO_CFG" \
       --sft    "$SFT_RUN" \
       --out    "$GRPO_RUN" \

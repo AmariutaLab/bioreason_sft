@@ -77,6 +77,15 @@ pipeline-smoke` is that chain explicitly.
 Tasks are convenience wrappers for the common case — for anything custom, call
 the scripts directly with `--config` / `--set` (see below).
 
+Strict trace configs are included for cleaner SFT data, but intentionally left as
+direct script calls so you inspect each run before scaling it:
+
+```bash
+OPENAI_API_KEY=... python build_traces.py --out strict-smoke --config strict_smoke
+OPENAI_API_KEY=... python build_traces.py --out strict-medium --config strict_medium
+OPENAI_API_KEY=... python build_traces.py --out strict-default --config strict_default
+```
+
 ## The config system
 
 **Source code never changes for an experiment.** Three levers, in order of preference:
@@ -133,8 +142,6 @@ python train_sft_distill.py --config h100_8b --traces default --out qwen8b
 | Qwen3-4B-Thinking | 4B | yes | organizers' baseline; fits a T4 |
 | Gemma 4 E4B | ~4.5B effective (~6B total) | yes | Apache 2.0, native thinking; but *edge* tier (Per-Layer Embeddings) |
 | Gemma 4 E2B | ~2.3B effective | yes | too small for a knowledge-bound task |
-| Gemma 4 26B A4B | 25.2B total / 3.8B active | **probably not** | MoE. "<10B" almost certainly means *total* — ask the organizers before relying on it |
-| Gemma 4 12B / 31B | 12B / 30.7B | no | over the cap |
 
 **Why Qwen3-8B by default:** this task is *knowledge-bound* — the bottleneck is
 knowing what `Sbno2` does in a macrophage, not reasoning capacity. Under the
@@ -187,10 +194,14 @@ python download_data.py
 python build_grounding.py --out default
 
 # 2. traces — SMOKE TEST FIRST. 30 rows costs cents.
-export TEACHER_API_KEY=...
+export OPENAI_API_KEY=...
 python build_traces.py --out smoke --config smoke
 #    then READ the traces (see "Trace QA" below) before spending on:
 python build_traces.py --out default --config default
+
+# stricter prompt/filter path, after the smoke traces look good:
+python build_traces.py --out strict-smoke --config strict_smoke
+python build_traces.py --out strict-medium --config strict_medium
 
 # fallback if no teacher key yet: deterministic blocked-train label traces
 python build_label_traces.py --out label-default --config v100_4b
@@ -205,6 +216,122 @@ python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo
 python make_submission.py --stage sft --run qwen4b-v100
 python validate_submission.py ../output/submissions/sft-qwen4b-v100.zip
 ```
+
+## What the CPU stages do
+
+### `build_grounding.py`
+
+`build_grounding.py` creates the offline biological context used by the teacher
+prompt and by the optional GRPO verifier. It does **not** create student-time
+features; the student never sees this database text at inference.
+
+Step by step:
+
+1. Loads `configs/grounding/<config>.yaml` and writes outputs under
+   `output/grounding/<out>/`.
+2. Loads `train.csv` and `test.csv`, then collects every unique perturbed gene
+   and target gene symbol across both files.
+3. Queries mygene.info in batches for mouse gene metadata: canonical symbol,
+   gene name, RefSeq-style summary, and a short list of GO terms. Results are
+   keyed by the **queried symbol**, not the hit symbol, so aliases do not inflate
+   coverage or make queried genes disappear.
+4. Fetches CollecTRI signed TF-target edges. The default path uses the static
+   mirror `rescued.omnipathdb.org/CollecTRI.csv`, caches it under
+   `output/grounding/<out>/cache/collectri_static.csv`, and parses `weight` as
+   the signed mode of regulation.
+5. Cleans CollecTRI edges: ambiguous signs are dropped, underscore complexes are
+   split, and named complexes such as `NFKB` and `AP1` are expanded into member
+   TF symbols.
+6. Computes row-level features for every train/test pair: `pert_is_tf`,
+   `has_edge`, signed `mor`, expected direction letter for direct edges, and
+   number of shared upstream regulators, the matching regulator names, and
+   optional curated regulon/upstream-TF summaries.
+7. Builds a compact teacher context block for each `(pert, gene)` pair:
+   perturbation description, target description, direct regulatory-edge statement
+   when available, and shared-regulator count when enabled.
+8. Refuses to write a grounding file if CollecTRI is enabled but zero edges were
+   loaded, unless `--allow-no-edges` is passed.
+9. Writes `grounding.json` and `resolved_config.json`.
+
+The important output is:
+
+```text
+output/grounding/<out>/grounding.json
+```
+
+Each row in that file has:
+
+```json
+{
+  "pert": "...",
+  "gene": "...",
+  "features": {"has_edge": 0, "pert_is_tf": 1, "...": "..."},
+  "context": "PERTURBED: ...\nTARGET: ...\nREGULATORY EDGE: ..."
+}
+```
+
+### `build_traces.py`
+
+`build_traces.py` turns known training labels into filtered reasoning traces for
+SFT. This is SynthPert-style **rationalization of the known label**, not
+zero-shot prediction by the teacher.
+
+Step by step:
+
+1. Loads `configs/traces/<config>.yaml` and `prompts/teacher/<name>.yaml`.
+2. Reads the teacher API key from the configured environment variable, currently
+   `OPENAI_API_KEY` by default.
+3. Creates an OpenAI-compatible chat client for the teacher and, unless a
+   separate critic is configured, reuses the same model as the critic.
+4. Loads `output/grounding/<grounding_run>/grounding.json` and the Kaggle train
+   data.
+5. Recreates the same two-axis blocked split used by SFT/GRPO. Only train-block
+   rows are eligible for traces; held-out perturbations or target genes are not
+   traced.
+6. Samples rows to attempt. By default sampling is class-balanced so `up`,
+   `down`, and `none` receive equal teacher budget despite the original class
+   imbalance.
+7. For each sampled row, inserts the grounding context, perturbation, target
+   gene, and **known label meaning** into the teacher prompt. Differential rows
+   and `none` rows use separate prompt templates.
+8. Rejects missing or too-short responses.
+9. Runs the deterministic quality prefilter. Strict configs require both gene
+   symbols to be mentioned and reject generic/meta phrases before critic spend.
+10. Applies the leak filter from `prompts/teacher/*.yaml`. Traces that explicitly
+    reason backward from the provided answer are hard-rejected before critic
+    scoring.
+11. If the critic is enabled, asks the critic to score the trace and keeps only
+    traces meeting `critic.min_score`.
+12. Appends accepted traces to `traces.jsonl` immediately. Reruns are resumable:
+    existing row IDs are skipped.
+13. Appends rejected attempts to `rejects.jsonl`, including the rejection reason,
+    so the prompt/filter failure modes are auditable.
+14. Writes `stats.json` and `resolved_config.json`.
+
+The important output is:
+
+```text
+output/traces/<out>/traces.jsonl
+output/traces/<out>/rejects.jsonl
+```
+
+Each `traces.jsonl` line is one accepted training example:
+
+```json
+{
+  "id": "Pert_Gene",
+  "pert": "Pert",
+  "gene": "Gene",
+  "label": "down",
+  "letter": "B",
+  "reasoning": "...",
+  "critic_score": 5,
+  "teacher": "gpt-4o-mini"
+}
+```
+
+Run `--out smoke --set sampling.n=30 --set workers=2` first and read the traces
+before generating the full `default` run.
 
 ### Resume
 
@@ -226,24 +353,29 @@ wandb (`--set wandb.enabled=true`) is for configs and curves, **not** resume.
 ## SLURM
 
 Edit the `EXPERIMENTS` array in `run_experiment.sbatch` — one line per
-experiment, `"STAGE|SFT_CONFIG|SFT_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"`:
+experiment, `"STAGE|SFT_CONFIG|SFT_RUN|TRACES_RUN|GRPO_CONFIG|GRPO_RUN|EXTRA"`:
 
 ```bash
 EXPERIMENTS=(
-  "sft|v100_4b|qwen4b-v100||| "
-  "sft|label_only_ablation|abl-labelonly||| "
-  "sft+grpo|h100_8b|qwen8b|h100|qwen8b-grpo|"
-  "sft+grpo|h100_8b|qwen8b-r64|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
+  "sft|v100_labelonly_screen|screen-labelonly|label-default||| "
+  "sft|v100_screen|screen-current|default||| "
+  "sft|v100_screen|screen-cleaned|strict-default||| "
+  "sft|v100_4b|qwen4b-v100|label-default||| "
+  "sft|h100_labelonly_screen|h100-screen-labelonly|label-default||| "
+  "sft|h100_screen|h100-screen-current|default||| "
+  "sft|h100_screen|h100-screen-cleaned|strict-default||| "
+  "sft+grpo|h100_8b|qwen8b|default|h100|qwen8b-grpo|"
+  "sft+grpo|h100_8b|qwen8b-r64|default|h100|qwen8b-r64-grpo|--set lora.r=64 --set lora.alpha=128"
 )
 ```
 
 ```bash
-sbatch -A csd832 run_experiment.sbatch              # default V100 baseline
-sbatch -A csd832 --array=1 run_experiment.sbatch    # label-only control
+sbatch -A csd832 run_experiment.sbatch              # V100 label-only screen
+sbatch -A csd832 --array=0-2 run_experiment.sbatch   # V100 trace-source screen
 
 # later, after NAIRR access:
-sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 --array=2-3 \
-  --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100,TRACES_RUN=default \
+sbatch -A sdp147 -p nairr-gpu-shared --gpus=h100:1 --array=4-6 \
+  --export=ALL,PIXI_ENV=h100,CHECK_TASK=check-gpu-h100 \
   run_experiment.sbatch
 ```
 
@@ -252,6 +384,10 @@ they need internet, not a GPU. The script activates the pixi env via
 `pixi shell-hook` (no conda), so compute nodes get the same `pixi.lock` the login
 node used. Update `--partition`, the `module load cuda` line, and `PIXI_HOME` for
 your cluster. It passes `--resume` unconditionally, so requeued jobs self-heal.
+Each array line owns its trace run; override with `TRACE_RUN_OVERRIDE`,
+`SFT_CFG_OVERRIDE`, `SFT_RUN_OVERRIDE`, `GRPO_CFG_OVERRIDE`, or
+`GRPO_RUN_OVERRIDE`. Set `USE_SRUN=1` only on clusters that require launching the
+Python process under `srun`.
 
 ## Notebook
 
@@ -274,6 +410,12 @@ optimized. `Task.resolve_letter_ids()` verifies at runtime that greedy BPE
 doesn't merge `>` + `A` into one `>A` token — it tries separators and picks one
 that provably works instead of assuming.
 
+**Response-only SFT masking.** `train_sft_distill.py` now builds tokenized
+examples directly and sets prompt labels to `-100`; loss applies only to the
+assistant reasoning plus final answer, not to the user prompt. This avoids
+depending on TRL/Unsloth chat-boundary helpers whose behavior changes across
+versions, while preserving the same prefix invariant used at inference.
+
 **Continuous scores, not letters.** The metric is rank-based AUROC. We generate
 the `<think>` block, then read the A/B/C logits in one forward pass, then tune
 temperature on val. The official baseline takes one sample → one letter → a fixed
@@ -287,19 +429,46 @@ into weights. The student never sees a database.
 
 **CollecTRI is the highest-value source** because it's *signed*: knock down an
 activator → target down; knock down a repressor → target up. That's DIR-AUROC,
-the metric half even SOTA only reaches ~0.65–0.73 on. We fetch it straight from
-OmniPath's REST API with `requests` rather than via `decoupler` — decoupler
-depends on numba, whose resolver backtracks to numba 0.53.1 (no Python 3.12
-wheel, and its sdist refuses to build: *"only versions >=3.6,<3.10 are
-supported"*). We used decoupler for exactly one download, so we do the download.
-The optional library path still exists: `pixi run -e grounding-decoupler
-grounding` with `--set sources.collectri.method=decoupler`.
+the metric half even SOTA only reaches ~0.65–0.73 on. By default we fetch the
+static CollecTRI CSV mirror at `rescued.omnipathdb.org/CollecTRI.csv`; it has
+`source,target,weight` where `weight` is already the ±1 sign, and it survives
+OmniPath REST 502 outages because it is served from a different host. OmniPath
+REST remains as a fallback/diagnostic path. We avoid `decoupler` by default
+because it depends on numba, whose resolver backtracks to numba 0.53.1 (no
+Python 3.12 wheel, and its sdist refuses to build: *"only versions >=3.6,<3.10
+are supported"*). The optional library path still exists: `pixi run -e
+grounding-decoupler grounding` with `--set sources.collectri.method=decoupler`.
 
 Two cleanups happen on the way in: rows with **ambiguous signs** (both or neither
 stimulation/inhibition) are dropped, because an edge without a direction is worse
-than no edge here; and **protein complexes** (`FOS_JUN`, `FOSL1_JUNB`) are split
-into member TFs, since a complex name never matches a single perturbed gene
-symbol and would silently cost coverage.
+than no edge here; and **protein complexes** are expanded. This includes
+underscore complexes (`FOS_JUN`, `FOSL1_JUNB`) and named complexes such as
+`NFKB`/`AP1`, since a complex name never matches a single perturbed gene symbol
+and would silently cost coverage.
+
+If CollecTRI fails, **check the error class before theorising**:
+
+```bash
+pixi run diagnose-omnipath
+```
+
+It probes human-tiny / mouse-tiny / mouse-full and reads the status codes. The
+distinction that matters: **4xx = our request is malformed** (wrong params,
+renamed API) — debug the code; **5xx or timeout = the server failed** — the
+request was fine, retry. Only the "mouse-tiny works, mouse-full 502s" pattern
+actually confirms that translation-at-volume is the culprit; a blanket 502 could
+just be a sick service.
+
+OmniPath 502s are plausible on the mouse query — it triggers server-side orthology
+translation, the slow path. The normal fetch uses the static mirror first and
+caches it under `output/grounding/<run>/cache/collectri_static.csv`. If that is
+disabled or unavailable, the REST path retries with backoff, caches raw TSVs, and
+falls back to **human edges matched by symbol** (everything is upper-cased before
+lookup, so `MYC` matches `Myc` — roughly the same homology mapping done
+client-side). If all CollecTRI paths still produce zero edges, `build_grounding.py`
+**exits rather than writing the file**: a grounding with no edges silently deletes
+the direction signal and you'd only notice when the GRPO verifier validated at
+chance. Override with `--allow-no-edges` if you actually want that.
 
 **Approach 2 (rationalize the known label)** means the teacher's own accuracy
 stops mattering: o4-mini scored ~52% on this task, yet its traces trained an 8B
@@ -309,6 +478,9 @@ latent in pretraining and traces just activate the reasoning pattern.
 **The leak filter** is the piece SynthPert doesn't detail. Handing the teacher the
 answer invites backward reasoning ("since the answer is B..."), which teaches the
 student nothing. 10 regex patterns, hard-rejected before the critic runs.
+Strict configs add a harsher prompt (`prompts/teacher/strict_v2.yaml`), require
+both gene symbols in the trace, reject generic phrases before critic scoring, and
+write rejected attempts to `rejects.jsonl` for audit.
 
 **GRPO warm-starts from SFT** — required, not optional. RL alone doesn't add new
 reasoning priors; SFT on traces adds the primitives RL then explores.
@@ -338,9 +510,11 @@ Also check the `none` traces specifically — they're 55% of the label space and
 the hardest to write well. If they're vacuous ("no known link"), fix
 `prompt_none` in `prompts/teacher/*.yaml`.
 
-Watch the keep-rate breakdown. High `leak` → tighten the rules. ~100% `lowscore`
-→ `--set critic.min_score=4` or a stronger teacher. A *low keep rate is not a
-bug*: SynthPert trained on ~2% of data and beat full-data runs.
+Watch the keep-rate breakdown. High `prefilter` means the teacher is producing
+generic or off-target prose; inspect `rejects.jsonl` before changing thresholds.
+High `leak` → tighten the rules. ~100% `lowscore` → `--set critic.min_score=4`
+or a stronger teacher. A *low keep rate is not a bug*: SynthPert trained on ~2%
+of data and beat full-data runs.
 
 ## Ablations worth reporting
 
@@ -351,6 +525,7 @@ You're publishing regardless of rank, and negative results here are publishable.
 | zero-shot base | honest floor |
 | `--config label_only_ablation` | the SynthPert control (~0.59 DE on human lines) |
 | trace SFT | the treatment |
+| `default` traces vs `strict-*` traces | isolates prompt/prefilter trace quality |
 | traces built with `--set sources.collectri.enabled=false` | isolates CollecTRI |
 | traces with `--set critic.enabled=false` | isolates quality filtering |
 | `+ GRPO` | isolates RL's marginal gain |

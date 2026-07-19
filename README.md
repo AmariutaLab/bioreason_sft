@@ -86,6 +86,15 @@ OPENAI_API_KEY=... python build_traces.py --out strict-medium --config strict_me
 OPENAI_API_KEY=... python build_traces.py --out strict-default --config strict_default
 ```
 
+Ungrounded trace configs use the same train split and critic flow, but skip the
+retrieved grounding context:
+
+```bash
+OPENAI_API_KEY=... python build_traces.py --out strict-medium-ungrounded-o4mini-n180 \
+  --config strict_medium_ungrounded_o4_mini \
+  --set sampling.n=180 --set sampling.balance_classes=true
+```
+
 ## The config system
 
 **Source code never changes for an experiment.** Three levers, in order of preference:
@@ -209,11 +218,15 @@ python build_label_traces.py --out label-default --config v100_4b
 # 3. SFT (GPU, ~1-2 h)
 python train_sft_distill.py --config v100_4b --traces label-default --out qwen4b-v100
 
+# optional: score saved SFT checkpoints on blocked validation
+python score_sft_checkpoints.py --run qwen4b-v100 --checkpoints 10 20 40 60
+
 # 4. GRPO (GPU, several h)
 python train_grpo.py --config h100 --sft qwen8b --out qwen8b-grpo
 
 # 5. submission
 python make_submission.py --stage sft --run qwen4b-v100
+python make_submission.py --stage sft --run qwen4b-v100 --checkpoints 10 20 40 60
 python validate_submission.py ../output/submissions/sft-qwen4b-v100.zip
 ```
 
@@ -283,17 +296,18 @@ Step by step:
    `OPENAI_API_KEY` by default.
 3. Creates an OpenAI-compatible chat client for the teacher and, unless a
    separate critic is configured, reuses the same model as the critic.
-4. Loads `output/grounding/<grounding_run>/grounding.json` and the Kaggle train
-   data.
+4. Loads the Kaggle train data. If grounding is enabled, also loads
+   `output/grounding/<grounding.run>/grounding.json`; configs with
+   `grounding.enabled: false` or CLI `--no-grounding` skip this.
 5. Recreates the same two-axis blocked split used by SFT/GRPO. Only train-block
    rows are eligible for traces; held-out perturbations or target genes are not
    traced.
 6. Samples rows to attempt. By default sampling is class-balanced so `up`,
    `down`, and `none` receive equal teacher budget despite the original class
    imbalance.
-7. For each sampled row, inserts the grounding context, perturbation, target
-   gene, and **known label meaning** into the teacher prompt. Differential rows
-   and `none` rows use separate prompt templates.
+7. For each sampled row, inserts the perturbation, target gene, **known label
+   meaning**, and optional grounding context into the teacher prompt.
+   Differential rows and `none` rows use separate prompt templates.
 8. Rejects missing or too-short responses.
 9. Runs the deterministic quality prefilter. Strict configs require both gene
    symbols to be mentioned and reject generic/meta phrases before critic spend.
@@ -305,7 +319,8 @@ Step by step:
 12. Appends accepted traces to `traces.jsonl` immediately. Reruns are resumable:
     existing row IDs are skipped.
 13. Appends rejected attempts to `rejects.jsonl`, including the rejection reason,
-    so the prompt/filter failure modes are auditable.
+    so the prompt/filter failure modes are auditable. Trace and reject rows also
+    record whether grounding was enabled.
 14. Writes `stats.json` and `resolved_config.json`.
 
 The important output is:
@@ -326,12 +341,58 @@ Each `traces.jsonl` line is one accepted training example:
   "letter": "B",
   "reasoning": "...",
   "critic_score": 5,
-  "teacher": "gpt-4o-mini"
+  "teacher": "gpt-4o-mini",
+  "grounding_enabled": true,
+  "grounding_run": "default"
 }
 ```
 
 Run `--out smoke --set sampling.n=30 --set workers=2` first and read the traces
 before generating the full `default` run.
+
+Reasoning-model teachers and critics can set `reasoning_effort` in
+`configs/traces/*.yaml`. For OpenAI o-series models, the client uses
+`max_completion_tokens` and omits sampling temperature. If a reasoning critic
+returns empty JSON, raise `critic.max_tokens` or use a non-reasoning critic.
+
+### Checkpoint Scoring
+
+SFT checkpoints are saved according to `train.save_strategy` and
+`train.save_steps`; the default config saves every 10 optimizer steps. To score
+all complete checkpoints on the standard blocked validation split:
+
+```bash
+python score_sft_checkpoints.py --run qwen4b-v100
+```
+
+Select checkpoints by step number or name, and use `-i/--input-csv` to score a
+custom CSV with `pert/gene` or `perturb_gene/target_gene` columns:
+
+```bash
+python score_sft_checkpoints.py --run qwen4b-v100 --checkpoints 10 20 checkpoint-40
+python score_sft_checkpoints.py --run qwen4b-v100 -i my_val.csv --batch 16
+```
+
+Scores are written to
+`../output/sft/<run>/checkpoint_val_outputs/checkpoint_val_scores.tsv`. By default,
+the first 10 generated validation outputs per checkpoint are also saved as
+`../output/sft/<run>/checkpoint_val_outputs/checkpoint-<step>/out_top10.csv`.
+
+### Submissions
+
+`make_submission.py` can package the final SFT adapter, a single checkpoint, or
+multiple SFT checkpoints:
+
+```bash
+python make_submission.py --stage sft --run qwen4b-v100
+python make_submission.py --stage sft --run qwen4b-v100 --checkpoint 40
+python make_submission.py --stage sft --run qwen4b-v100 --checkpoints 10 20 40 60 \
+  --n-ckpt-parallel 2
+```
+
+With multiple checkpoints, each CSV/zip gets a checkpoint suffix. `--out` may be
+a CSV path or an output directory; when it is a CSV path, the checkpoint label is
+inserted before `.csv`.
 
 ### Resume
 

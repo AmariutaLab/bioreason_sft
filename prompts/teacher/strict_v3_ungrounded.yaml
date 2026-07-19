@@ -1,0 +1,159 @@
+rules: |
+  Write a self-contained biological rationale using general molecular knowledge.
+
+  Hard rules:
+  - Mention both {pert} and {gene} by name.
+  - Briefly describe the relevant molecular function or protein class of each
+    gene when known.
+  - Focus only on facts that help explain the relationship.
+  - State a direct regulatory relationship only when you are confident it is
+    known for this exact gene pair.
+  - Do not infer direct regulation merely because {pert} is a transcription
+    factor, the genes share a pathway, or their functions are compatible.
+  - Base any indirect mechanism on concrete functions or relationships involving
+    the named genes.
+  - Distinguish known facts from hypotheses: use factual language for established
+    functions and conditional language for uncertain connections.
+  - Do not invent promoter binding, direct activation or repression,
+    intermediates, feedback, derepression, redundancy, buffering, or
+    compensation.
+  - Do not use broad processes such as stress, signaling, inflammation,
+    trafficking, homeostasis, or cell-state change unless they follow from a
+    specific function of {pert} or {gene}.
+  - Do not call evidence macrophage-specific unless it is established in
+    macrophages or a closely related myeloid setting.
+  - When a signed mechanism is supported, explain how reducing {pert} changes the
+    relevant process and thereby changes {gene} expression.
+  - If the direction-producing step is not supported, state that limitation
+    instead of inventing one.
+  - If either gene is poorly characterized, state the uncertainty briefly and
+    use only reasonably known biology.
+  - Absence of remembered evidence is not proof that the genes are unrelated.
+  - Make the rationale transferable by exposing the regulator or protein class,
+    target function, mechanism class, and causal sign when supported.
+  - Organize the rationale as:
+    1. function of {pert};
+    2. function of {gene};
+    3. relationship or mechanism class;
+    4. effect of reducing {pert}.
+  - Begin with biology, not with the response.
+  - Do not merely restate the requested direction.
+  - Do not mention labels, answer choices, supplied answers, FDR, fold-change
+    thresholds, statistical significance, training data, databases,
+    annotations, GO terms, retrieved information, or external context.
+  - Do not use "observed", "significant", "correct answer", "provided response",
+    "compensatory mechanism", or equivalent meta-language.
+  - Output only the rationale in 3-4 sentences.
+
+prompt_de: |
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Explain the most plausible forward biological mechanism for this association.
+  Use a signed causal chain when a known gene-pair relationship or concrete
+  pathway mechanism supports the direction.
+
+  If the genes are biologically connected but the direction-producing step is
+  uncertain, describe the most relevant gene-specific mechanism class and state
+  that the sign cannot be derived confidently from general molecular knowledge.
+  Do not force a signed mechanism merely to match the association.
+
+  {rules}
+
+prompt_none: |
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no detectable transcriptional change in {gene}.
+
+  Explain why the known molecular roles of {pert} and {gene} do not provide a
+  strong directional expectation for altered {gene} transcription.
+
+  Use a gene-specific argument based on the absence of a known signed route, an
+  indirect or weak connection, different regulatory levels, or dependence on an
+  unestablished cell state. Do not claim that the genes are unrelated or that an
+  effect is impossible.
+
+  {rules}
+
+critic: |
+  You are filtering biological rationales before they are used as supervised
+  training data. Evaluate the rationale independently using general molecular
+  knowledge. Do not infer or reward the intended response direction.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+
+  RATIONALE:
+  {trace}
+
+  Evaluate whether:
+  - both genes are correctly identified and their relevant functions are
+    accurate;
+  - the explanation is specific to the gene pair;
+  - direct edges and intermediates appear known rather than invented;
+  - indirect steps follow from concrete gene functions;
+  - facts are distinguished from hypotheses;
+  - causal and sign logic are internally consistent;
+  - unresolved direction-producing steps are acknowledged;
+  - macrophage-specific claims are appropriately qualified;
+  - the rationale provides reusable biological information rather than generic
+    pathway prose.
+
+  Score 0-5:
+  5 = accurate, specific, concise, and biologically informative; it either gives
+      a credible signed mechanism or clearly explains why no signed mechanism
+      follows; no forbidden or meta-language.
+  4 = useful and mostly specific, but one function, mechanistic step, or
+      uncertainty statement is underspecified.
+  3 = contains useful context, but the connection is weak, partly generic, or
+      the direction is asserted more strongly than the mechanism supports.
+  2 = mostly outcome restatement, generic pathway prose, or inadequate
+      discussion of one gene.
+  1 = fabricated regulation, invented intermediates, incorrect gene function,
+      unsupported promoter binding, or a signed story without biological
+      support.
+  0 = label leakage, benchmark or statistical metadata, contradiction, unrelated
+      reasoning, or extensive forbidden language.
+
+  Apply these limits:
+  - If the rationale could apply to hundreds of unrelated gene pairs, score <= 2.
+  - If either gene is misidentified, score <= 1.
+  - If a speculative edge, promoter interaction, or intermediate is presented as
+    established fact, score <= 1.
+  - If a broad process is not tied to a concrete gene function, score <= 2.
+  - If an up or down direction is stated without a sign-producing step,
+    score <= 3.
+  - An accurate unresolved rationale may receive 5 if it gives useful functions
+    for both genes and clearly identifies the missing signed link.
+  - Honest uncertainty should score higher than a fabricated mechanism.
+  - If it mentions labels, supplied answers, thresholds, FDR, fold changes,
+    statistical significance, training data, databases, annotations, GO terms,
+    or retrieved context, score 0.
+  - If it invokes compensation, buffering, or redundancy without naming a
+    concrete biological basis, score <= 1.
+
+  Reply with ONLY valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer, naming the main defect>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome|response)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\bcorrect\s+(?:answer|label|choice)\b'
+  - '\b(?:given|provided|supplied)\s+(?:answer|label|response|outcome)\b'
+  - '\btraining\s+(?:screen|label|response|example|data)\b'
+  - '\bbenchmark\s+threshold\b'
+  - '\bFDR\b'
+  - '\bfalse\s+discovery\s+rate\b'
+  - '\blog2\s*(?:fold\s*change|FC)\b'
+  - '\blog2FC\b'
+  - '\bstatistically\s+significant\b'
+  - '\bsignificant(?:ly)?\s+(?:increased|decreased|changed|upregulated|downregulated)\b'
+  - '\bobserved\s+(?:increase|decrease|effect|response|change)\b'
+  - '\bcompensat\w*\b'
+  - '\bbuffer(?:ing|ed|s)?\b'
+  - '\bredundan(?:cy|t)\b'
+  - '\bthe\s+provided\s+context\b'
+  - '\bretrieved\s+(?:context|evidence|information)\b'
+  - '\bGO\s+terms?\b'

@@ -1,0 +1,9 @@
+extends: strict_medium_ungrounded
+
+teacher:
+  model: o4-mini
+
+critic:
+  model: gpt-4o-mini
+  min_score: 4
+  max_tokens: 200

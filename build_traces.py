@@ -34,22 +34,35 @@ LETTER_MEANING = {"A": "UP-REGULATED", "B": "DOWN-REGULATED",
 class Chat:
     """Minimal OpenAI-compatible client (OpenAI / DeepSeek / OpenRouter / vLLM)."""
 
-    def __init__(self, model, base_url, api_key, timeout=180, max_retries=3):
+    def __init__(self, model, base_url, api_key, timeout=180, max_retries=3,
+                 reasoning_effort=None):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.model, self.key = model, api_key
         self.timeout, self.max_retries = timeout, max_retries
+        self.reasoning_effort = reasoning_effort
 
     def __call__(self, prompt, temperature, max_tokens):
         import time
+        payload = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        reasoning_model = bool(self.reasoning_effort) or re.match(r"^o[0-9]", self.model)
+        if reasoning_model:
+            payload["max_completion_tokens"] = max_tokens
+            if self.reasoning_effort:
+                payload["reasoning_effort"] = self.reasoning_effort
+        else:
+            payload["temperature"] = temperature
+            payload["max_tokens"] = max_tokens
+
         for attempt in range(self.max_retries + 1):
             try:
                 r = requests.post(
                     self.url, timeout=self.timeout,
                     headers={"Authorization": f"Bearer {self.key}",
                              "Content-Type": "application/json"},
-                    json={"model": self.model,
-                          "messages": [{"role": "user", "content": prompt}],
-                          "temperature": temperature, "max_tokens": max_tokens})
+                    json=payload)
                 r.raise_for_status()
                 txt = r.json()["choices"][0]["message"].get("content") or ""
                 # a reasoning teacher may emit its own <think>; strip it
@@ -97,6 +110,8 @@ def quality_prefilter(trace, pert, gene, cfg):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="traces run name")
+    ap.add_argument("--no-grounding", action="store_true",
+                    help="do not load or inject grounding context into teacher prompts")
     cfgmod.add_config_args(ap, "traces")
     args = ap.parse_args()
     cfg = cfgmod.resolve(args, "traces")
@@ -107,17 +122,26 @@ def main():
     if not key:
         raise SystemExit(f"set ${cfg.teacher.api_key_env}")
     teacher = Chat(cfg.teacher.model, cfg.teacher.base_url, key,
-                   cfg.teacher.timeout, cfg.teacher.max_retries)
+                   cfg.teacher.timeout, cfg.teacher.max_retries,
+                   cfg.teacher.get("reasoning_effort"))
     critic = teacher if not cfg.get_path("critic.model") else Chat(
         cfg.critic.model, cfg.get_path("critic.base_url") or cfg.teacher.base_url,
-        key, cfg.teacher.timeout, cfg.teacher.max_retries)
+        key, cfg.teacher.timeout, cfg.teacher.max_retries,
+        cfg.critic.get("reasoning_effort"))
 
     leak_re = re.compile("|".join(P.leak_patterns), re.I) \
         if cfg.filters.leak_filter else None
 
-    gpath = paths.grounding_json(cfg.grounding_run)
-    paths.require(gpath, f"run: python build_grounding.py --out {cfg.grounding_run}")
-    grounding = json.loads(gpath.read_text())["rows"]
+    grounding_enabled = bool(cfg.get_path("grounding.enabled", True)) and not args.no_grounding
+    grounding_run = cfg.get_path("grounding.run", cfg.get("grounding_run", "default"))
+    if grounding_enabled:
+        gpath = paths.grounding_json(grounding_run)
+        paths.require(gpath, f"run: python build_grounding.py --out {grounding_run}")
+        grounding = json.loads(gpath.read_text())["rows"]
+        print(f"[grounding] {grounding_run} enabled")
+    else:
+        grounding = {}
+        print("[grounding] disabled; teacher sees no retrieved context")
 
     train, _ = common.load_data()
     tr, va = common.split_from_cfg(train, cfg)     # SAME split as the trainers
@@ -157,7 +181,9 @@ def main():
                "pert": r.perturb_gene, "gene": r.target_gene,
                "label": r.label, "letter": r.letter,
                "reason": reason, "trace": trace,
-               "critic_score": critic_score, "critic_reason": critic_reason}
+               "critic_score": critic_score, "critic_reason": critic_reason,
+               "grounding_enabled": grounding_enabled,
+               "grounding_run": grounding_run if grounding_enabled else None}
         rfh.write(json.dumps(rec) + "\n")
         rfh.flush()
 
@@ -202,7 +228,9 @@ def main():
         rec = {"id": rid, "pert": r.perturb_gene, "gene": r.target_gene,
                "label": r.label, "letter": r.letter, "reasoning": trace,
                "critic_score": sc, "critic_reason": why,
-               "teacher": cfg.teacher.model, "prompts": cfg.prompts}
+               "teacher": cfg.teacher.model, "prompts": cfg.prompts,
+               "grounding_enabled": grounding_enabled,
+               "grounding_run": grounding_run if grounding_enabled else None}
         with lock:
             fh.write(json.dumps(rec) + "\n")
             fh.flush()
@@ -232,7 +260,9 @@ def main():
               "a stronger teacher.")
 
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
-    cfgmod.snapshot(cfg, out_dir, {"stats": stats, "attempted": len(rows)})
+    cfgmod.snapshot(cfg, out_dir, {"stats": stats, "attempted": len(rows),
+                                   "grounding_enabled": grounding_enabled,
+                                   "grounding_run": grounding_run if grounding_enabled else None})
     print(f"\nWrote {out_file}")
     print("NEXT: read 5-10 traces by hand. Do they reason about SPECIFIC gene "
           "function, or hand-wave about pathways? The former generalizes.")

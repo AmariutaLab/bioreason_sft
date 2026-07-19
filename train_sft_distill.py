@@ -181,6 +181,7 @@ def main():
             logging_steps=t.logging_steps, optim=t.optim,
             weight_decay=t.weight_decay, seed=cfg.split.seed,
             output_dir=str(ckpt_dir), save_strategy=t.save_strategy,
+            save_steps=int(t.get("save_steps", 10)),
             save_total_limit=t.save_total_limit,
             bf16=bf16, fp16=not bf16,
             report_to="wandb" if run_id else "none"),

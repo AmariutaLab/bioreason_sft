@@ -25,8 +25,9 @@ train:
   warmup_frac: 0.05
   weight_decay: 0.01
   optim: adamw_torch
-  save_strategy: epoch
-  save_total_limit: 3
+  save_strategy: steps
+  save_steps: 10
+  save_total_limit: 20
   logging_steps: 10
   bf16: auto
 

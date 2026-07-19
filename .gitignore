@@ -7,3 +7,5 @@ __pycache__/
 cache/
 mnt/
 unsloth_compiled_cache/
+*.err
+*.out

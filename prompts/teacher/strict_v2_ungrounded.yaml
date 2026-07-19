@@ -1,0 +1,124 @@
+rules: |
+  Write a self-contained biological rationale using general molecular knowledge.
+
+  Hard rules:
+  - Mention both {pert} and {gene} by name.
+  - Briefly describe the relevant molecular function of both genes when known.
+  - State a direct regulatory relationship only when it is well established for
+    this exact gene pair.
+  - Do not infer direct regulation merely because {pert} is a transcription
+    factor, the genes share a pathway, or their functions are compatible.
+  - Use an indirect causal chain only when each step is biologically plausible
+    and specific to the two genes.
+  - Do not invent promoter binding, intermediates, feedback, repression,
+    derepression, redundancy, buffering, or compensation.
+  - Do not describe evidence as macrophage-specific unless it is established in
+    macrophages or a closely related myeloid setting.
+  - If either gene is poorly characterized or no reliable mechanism is known,
+    name the uncertainty briefly, then give the best cautious gene-specific
+    hypothesis.
+  - Absence of remembered evidence is not proof that the genes are unrelated.
+  - Begin with gene functions and mechanistic evidence, not with the response.
+  - End by connecting the mechanism or uncertainty to the requested direction.
+  - Do not mention labels, answer choices, supplied answers, FDR, fold-change
+    thresholds, statistical significance, training data, databases,
+    annotations, GO terms, retrieved information, or external context.
+  - Do not use "observed", "significant", "correct answer", "provided response",
+    "compensatory mechanism", or equivalent meta-language.
+  - Output only the rationale in 2-4 sentences.
+
+prompt_de: |
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Explain the most plausible forward mechanism for this association. Give a
+  signed mechanism when the gene-pair relationship or pathway logic supports
+  one. If the connection is weak, be explicit about uncertainty while still
+  giving a concrete gene-specific hypothesis.
+
+  {rules}
+
+prompt_none: |
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no detectable transcriptional change in {gene}.
+
+  Explain why reducing {pert} would not be expected to strongly alter {gene}.
+  Prefer a gene-specific argument based on functional separation, weak or
+  indirect coupling, cell-state specificity, or lack of a reliable signed
+  regulatory connection. Do not claim the genes are unrelated merely because no
+  direct connection is known.
+
+  {rules}
+
+critic: |
+  You are filtering biological rationales before they are used as supervised
+  training data. Evaluate the rationale independently. Do not infer, reward, or
+  judge the intended response direction.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+
+  RATIONALE:
+  {trace}
+
+  Evaluate:
+  - whether both genes are correctly identified and discussed;
+  - whether their molecular functions are described accurately;
+  - whether every claimed direct edge or intermediate is well established;
+  - whether claimed activation, repression, and knockdown effects are propagated
+    logically within the rationale;
+  - whether macrophage-specific claims are appropriately qualified;
+  - whether uncertainty is stated when pair-specific evidence is weak;
+  - whether the reasoning is specific to this gene pair rather than generic.
+
+  Score 0-5:
+  5 = specific and concise; both gene functions are accurate; mechanistic claims
+      are well supported; causal logic is internally consistent; uncertainty is
+      appropriately calibrated; no forbidden or meta-language.
+  4 = useful and mostly specific, but one mechanistic step or gene function is
+      somewhat underspecified.
+  3 = biologically plausible but weakly supported, partially generic, or overly
+      confident about an indirect relationship.
+  2 = mostly generic reasoning, outcome restatement, unsupported pathway prose,
+      or inadequate discussion of one gene.
+  1 = fabricated direct regulation, invented intermediates, incorrect gene
+      function, unsupported macrophage-specific claims, or serious biological
+      hand-waving.
+  0 = label or answer leakage, benchmark or statistical metadata, internal
+      contradiction, or reasoning unrelated to the requested genes.
+
+  Apply these limits:
+  - If the rationale could apply to hundreds of gene pairs, score <= 2.
+  - If it asserts an uncertain direct edge, promoter interaction, or invented
+    intermediate, score <= 1.
+  - If either gene is misidentified or confused with another gene, score <= 1.
+  - A requested direction cannot rescue an unsupported regulatory relationship.
+  - Honest uncertainty should score higher than a specific fabricated story.
+  - If it mentions labels, supplied answers, thresholds, FDR, fold changes,
+    statistical significance, training data, databases, annotations, GO terms,
+    or retrieved context, score 0.
+
+  Reply with ONLY valid JSON:
+  {{"score": <int>, "reason": "<8 words or fewer>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome|response)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\bcorrect\s+(?:answer|label|choice)\b'
+  - '\b(?:given|provided|supplied)\s+(?:answer|label|response|outcome)\b'
+  - '\btraining\s+(?:screen|label|response|example|data)\b'
+  - '\bbenchmark\s+threshold\b'
+  - '\bFDR\b'
+  - '\bfalse\s+discovery\s+rate\b'
+  - '\blog2\s*(?:fold\s*change|FC)\b'
+  - '\blog2FC\b'
+  - '\bstatistically\s+significant\b'
+  - '\bsignificant(?:ly)?\s+(?:increased|decreased|changed|upregulated|downregulated)\b'
+  - '\bobserved\s+(?:increase|decrease|effect|response|change)\b'
+  - '\bcompensatory\s+mechanism\b'
+  - '\bthe\s+provided\s+context\b'
+  - '\bretrieved\s+(?:context|evidence|information)\b'
+  - '\bGO\s+terms?\b'

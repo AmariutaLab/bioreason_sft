@@ -1,0 +1,9 @@
+extends: strict_medium_ungrounded
+
+teacher:
+  model: gpt-5.6-terra
+  reasoning_effort: high
+
+critic:
+  model: gpt-5.6-luna
+  reasoning_effort: xhigh

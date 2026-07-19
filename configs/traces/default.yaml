@@ -1,6 +1,9 @@
 # Generate + critic-filter synthetic reasoning traces (SynthPert Approach 2).
 
-grounding_run: default        # reads output/grounding/<this>/grounding.json
+grounding_run: default        # legacy alias; prefer grounding.run below
+grounding:
+  enabled: true
+  run: default                  # reads output/grounding/<this>/grounding.json
 prompts: teacher/default      # prompts/teacher/default.yaml
 workers: 8
 

@@ -1,0 +1,9 @@
+extends: strict_medium
+
+# Same sampling/filtering as strict_medium, but the teacher sees no retrieved
+# grounding context. This tests whether label-rationalized biological priors are
+# more useful than context-constrained rationales for SFT.
+grounding:
+  enabled: false
+
+prompts: teacher/strict_v2_ungrounded

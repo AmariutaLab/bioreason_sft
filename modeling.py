@@ -6,7 +6,43 @@ packages: transformers, peft, trl, pytorch, and bitsandbytes.
 """
 from __future__ import annotations
 
+from importlib import metadata
+
+from packaging.version import Version
 import torch
+
+
+def disable_incompatible_torchao_for_peft():
+    """Make PEFT ignore old TorchAO builds that its dispatcher cannot support."""
+    try:
+        torchao_version = Version(metadata.version("torchao").split("+", 1)[0])
+    except metadata.PackageNotFoundError:
+        return
+    except Exception as exc:
+        print(f"[model] could not inspect torchao version ({exc}); leaving PEFT unchanged")
+        return
+
+    if torchao_version >= Version("0.16.0"):
+        return
+
+    print(f"[model] torchao {torchao_version} is too old for this PEFT build; "
+          "disabling PEFT TorchAO LoRA dispatch")
+    try:
+        import peft.import_utils as peft_import_utils
+
+        peft_import_utils.is_torchao_available.cache_clear()
+        peft_import_utils.is_torchao_available = lambda: False
+    except Exception as exc:
+        print(f"[model] could not patch peft.import_utils torchao check ({exc})")
+
+    try:
+        import peft.tuners.lora.torchao as peft_lora_torchao
+
+        peft_lora_torchao.is_torchao_available = lambda: False
+    except Exception:
+        # The LoRA torchao dispatcher may not have been imported yet. In that
+        # case patching peft.import_utils is sufficient for the later import.
+        pass
 
 
 def _want_unsloth(model_cfg) -> bool:
@@ -75,6 +111,7 @@ def add_lora(model, lora_cfg, seed: int, backend: str):
             random_state=seed,
         )
 
+    disable_incompatible_torchao_for_peft()
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
     if getattr(model, "is_loaded_in_4bit", False) or getattr(model, "is_loaded_in_8bit", False):

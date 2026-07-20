@@ -1,0 +1,130 @@
+rules: |
+  Use the context as private biological hints only. Prefer concrete gene
+  functions, protein classes, pathway membership, TF-target relationships, and
+  known regulatory modules. Ignore vague ontology parents such as biological
+  process, molecular function, cellular component, binding, or regulation.
+
+  Do not cite or mention the context, databases, annotations, GO terms, labels,
+  answer choices, thresholds, FDR, fold changes, training data, benchmark data,
+  observed effects, or statistical significance.
+
+  Write in the style of a compact mechanistic biology rationale:
+  - State the established role of {pert}.
+  - State the established role or regulation of {gene}.
+  - For up/down, give a plausible sign-producing bridge from {pert} knockdown to
+    {gene} mRNA direction. If the bridge is indirect, say it is a hypothesis.
+  - For no-change, explain the specific separation in pathway, compartment,
+    regulatory level, or macrophage cell-state dependency.
+  - Do not invent promoter binding, direct regulation, named intermediates, or
+    macrophage specificity unless well supported.
+
+  Output only the rationale in 3-6 sentences.
+
+prompt_de: |
+  You are an expert molecular and cellular biologist.
+
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Write a concise biological rationale explaining why this response is plausible.
+  Use any specific context-supported biology as factual anchors, but do not name
+  the source of that information. Keep the reasoning mechanistic rather than
+  descriptive.
+
+  {rules}
+
+prompt_none: |
+  You are an expert molecular and cellular biologist.
+
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} has no
+  clear directional transcriptional effect on {gene}.
+
+  Write a concise biological rationale explaining why a signed response is not
+  expected. Use any specific context-supported biology as factual anchors, but do
+  not name the source of that information. Do not merely say the genes are
+  unrelated.
+
+  {rules}
+
+critic: |
+  You are an expert molecular and cellular biologist evaluating a synthetic
+  rationale for supervised fine-tuning.
+
+  Judge whether the rationale is biologically accurate, specific, coherent, and
+  useful as mechanistic training data. Do not judge whether the requested
+  expression direction is experimentally correct.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+  Requested association: {meaning}
+
+  Context available to the teacher:
+  {context}
+
+  Rationale:
+  {trace}
+
+  Score 0-5:
+  5 = excellent: compact SynthPert-style reasoning with accurate functions for
+      both genes and a specific, well-calibrated causal bridge.
+  4 = good: useful and gene-specific, with at most one cautious indirect step.
+  3 = marginal: real functions are mentioned, but the bridge is broad,
+      weakly signed, or mostly generic.
+  2 = weak: could apply to many unrelated gene pairs, only one gene is specific,
+      or it mostly says there is no direct regulation.
+  1 = bad: incorrect gene identity/function, invented direct regulation,
+      unsupported promoter binding, or unsupported named intermediates stated as
+      fact.
+  0 = unusable: label/source/statistical leakage, answer-choice wording,
+      contradiction, or rationale unrelated to the requested genes.
+
+  Apply these limits:
+  - If either gene's function is missing or vague, score <= 2.
+  - If the rationale relies on generic homeostasis, stress, compensation,
+    downstream effects, or pathway language without naming a concrete mechanism,
+    score <= 2.
+  - If it cites or mentions context, databases, annotations, GO, labels,
+    answer choices, thresholds, FDR, fold changes, training data, benchmark data,
+    observed effects, or statistical significance, score 0.
+  - For up/down, if no sign-producing step connects {pert} knockdown to {gene}
+    mRNA direction, score <= 2.
+  - For no-change, if it only says "no known direct regulation" without a
+    specific functional separation, score <= 2.
+  - Speculative bridges can score 4 only when the factual anchors are concrete
+    and uncertainty is explicitly calibrated.
+
+  Reply only with valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome|response)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\bcorrect\s+(?:answer|label|choice)\b'
+  - '\b(?:given|provided|supplied)\s+(?:answer|label|response|outcome)\b'
+  - '\btraining\s+(?:screen|label|response|example|data)\b'
+  - '\bbenchmark\s+threshold\b'
+  - '\bbenchmark\b'
+  - '\bFDR\b'
+  - '\bfalse\s+discovery\s+rate\b'
+  - '\blog2\s*(?:fold\s*change|FC)\b'
+  - '\blog2FC\b'
+  - '\bstatistical(?:ly)?\b'
+  - '\bsignificant(?:ly)?\b'
+  - '\bobserved\s+(?:increase|decrease|effect|response|change|upregulation|downregulation)\b'
+  - '\bthe\s+provided\s+context\b'
+  - '\bprovided\s+context\b'
+  - '\bretrieved\s+(?:context|evidence|information)\b'
+  - '\bexternal\s+context\b'
+  - '\bcontext\s+(?:shows|suggests|states|indicates|provides)\b'
+  - '\bdatabase(?:s)?\b'
+  - '\bannotation(?:s)?\b'
+  - '\bGO\s+terms?\b'

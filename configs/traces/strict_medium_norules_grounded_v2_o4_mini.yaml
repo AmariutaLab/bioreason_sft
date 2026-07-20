@@ -1,0 +1,7 @@
+extends: strict_medium_norules_grounded_v2_gpt4o_mini
+
+# Reserve for hard-case routing after the cheaper GPT-4o-mini grounded run is
+# compared with the ungrounded o4-mini traces.
+teacher:
+  model: o4-mini
+  max_tokens: 2400

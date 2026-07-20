@@ -179,6 +179,8 @@ def main():
                     help="rewrite at most this many source traces")
     ap.add_argument("--offset", type=int, default=0,
                     help="skip this many source traces before --limit")
+    ap.add_argument("--fallback-original-on-reject", action="store_true",
+                    help="write the original trace if the rewrite is rejected")
     cfgmod.add_config_args(ap, "traces")
     args = ap.parse_args()
     cfg = cfgmod.resolve(args, "traces")
@@ -234,9 +236,14 @@ def main():
     leak_re = re.compile("|".join(P.leak_patterns), re.I) \
         if cfg.filters.leak_filter else None
     lock = threading.Lock()
-    stats = {"kept": 0, "leak": 0, "prefilter": 0, "lowscore": 0, "fail": 0}
+    stats = {"kept": 0, "fallback": 0, "leak": 0, "prefilter": 0,
+             "lowscore": 0, "fail": 0}
     fh = out_file.open("a")
     rfh = reject_file.open("a")
+
+    def processed_count():
+        return stats["kept"] + stats["leak"] + stats["prefilter"] \
+            + stats["lowscore"] + stats["fail"]
 
     def reject(reason, row, revised="", critic_score_value=None, critic_reason=""):
         rec = dict(row)
@@ -253,6 +260,30 @@ def main():
         })
         rfh.write(json.dumps(rec) + "\n")
         rfh.flush()
+
+    def write_original_fallback(row, reject_reason, revised="",
+                                critic_score_value=None, critic_reason=""):
+        rec = dict(row)
+        rec.update({
+            "reasoning": row.get("reasoning", ""),
+            "original_reasoning": row.get("reasoning", ""),
+            "original_teacher": row.get("teacher"),
+            "original_prompts": row.get("prompts"),
+            "original_critic_score": row.get("critic_score"),
+            "original_critic_reason": row.get("critic_reason"),
+            "refine_status": "fallback_original",
+            "refine_reject_reason": reject_reason,
+            "refine_reject_trace": revised,
+            "refine_reject_critic_score": critic_score_value,
+            "refine_reject_critic_reason": critic_reason,
+            "refiner": cfg.teacher.model,
+            "refine_prompts": cfg.prompts,
+            "grounding_enabled": grounding_enabled,
+            "grounding_run": grounding_run if grounding_enabled else None,
+        })
+        fh.write(json.dumps(rec) + "\n")
+        fh.flush()
+        stats["fallback"] += 1
 
     def work(row):
         rid = row["id"]
@@ -276,17 +307,24 @@ def main():
             with lock:
                 stats["fail"] += 1
                 reject("fail_or_short", row, revised or "")
+                if args.fallback_original_on_reject:
+                    write_original_fallback(row, "fail_or_short", revised or "")
             return
         ok, why_prefilter = quality_prefilter(revised, row["pert"], row["gene"], cfg)
         if not ok:
             with lock:
                 stats["prefilter"] += 1
-                reject(f"prefilter: {why_prefilter}", row, revised)
+                reason = f"prefilter: {why_prefilter}"
+                reject(reason, row, revised)
+                if args.fallback_original_on_reject:
+                    write_original_fallback(row, reason, revised)
             return
         if leak_re and leak_re.search(revised):
             with lock:
                 stats["leak"] += 1
                 reject("leak", row, revised)
+                if args.fallback_original_on_reject:
+                    write_original_fallback(row, "leak", revised)
             return
         if cfg.critic.enabled:
             sc, why = critic_score(critic, P.critic, row, meaning, revised, cfg, ctx)
@@ -296,6 +334,8 @@ def main():
             with lock:
                 stats["lowscore"] += 1
                 reject("lowscore", row, revised, sc, why)
+                if args.fallback_original_on_reject:
+                    write_original_fallback(row, "lowscore", revised, sc, why)
             return
         rec = dict(row)
         rec.update({
@@ -307,6 +347,7 @@ def main():
             "original_critic_reason": row.get("critic_reason"),
             "critic_score": sc,
             "critic_reason": why,
+            "refine_status": "refined",
             "refiner": cfg.teacher.model,
             "prompts": cfg.prompts,
             "grounding_enabled": grounding_enabled,
@@ -316,9 +357,10 @@ def main():
             fh.write(json.dumps(rec) + "\n")
             fh.flush()
             stats["kept"] += 1
-            n = sum(stats.values())
+            n = processed_count()
             if n % 25 == 0:
-                print(f"  {n}/{len(rows)} kept={stats['kept']} leak={stats['leak']} "
+                print(f"  {n}/{len(rows)} kept={stats['kept']} "
+                      f"fallback={stats['fallback']} leak={stats['leak']} "
                       f"prefilter={stats['prefilter']} low={stats['lowscore']} "
                       f"fail={stats['fail']}")
 
@@ -327,10 +369,13 @@ def main():
     fh.close()
     rfh.close()
 
-    total = max(1, sum(stats.values()))
-    print(f"\nkept={stats['kept']} leak={stats['leak']} "
+    total = max(1, processed_count())
+    output = stats["kept"] + stats["fallback"]
+    print(f"\nkept={stats['kept']} fallback={stats['fallback']} leak={stats['leak']} "
           f"prefilter={stats['prefilter']} lowscore={stats['lowscore']} "
-          f"fail={stats['fail']}  (keep rate {100*stats['kept']/total:.1f}%)")
+          f"fail={stats['fail']}  "
+          f"(refined keep rate {100*stats['kept']/total:.1f}%, "
+          f"output rate {100*output/total:.1f}%)")
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
     cfgmod.snapshot(cfg, out_dir, {
         "stats": stats,

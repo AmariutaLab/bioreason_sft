@@ -107,6 +107,36 @@ def quality_prefilter(trace, pert, gene, cfg):
     return True, ""
 
 
+def filter_context(ctx, cfg):
+    """Optionally drop low-value context lines before teacher prompting."""
+    line_pats = cfg.get_path("grounding.drop_context_lines", []) or []
+    part_pats = cfg.get_path("grounding.drop_context_parts", []) or []
+    go_term_pats = cfg.get_path("grounding.drop_go_terms", []) or []
+    if not ctx or (not line_pats and not part_pats and not go_term_pats):
+        return ctx
+    kept = []
+    for line in ctx.splitlines():
+        if any(re.search(pat, line, re.I) for pat in line_pats):
+            continue
+        if go_term_pats and "| GO:" in line:
+            prefix, _, terms = line.partition("| GO:")
+            kept_terms = []
+            for term in terms.split(";"):
+                term = term.strip()
+                if term and not any(re.search(pat, term, re.I)
+                                    for pat in go_term_pats):
+                    kept_terms.append(term)
+            line = prefix.rstrip()
+            if kept_terms:
+                line = f"{line} | GO: {'; '.join(kept_terms)}"
+        for pat in part_pats:
+            line = re.sub(pat, "", line, flags=re.I).rstrip()
+        if not line:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="traces run name")
@@ -191,7 +221,7 @@ def main():
         rid = f"{r.perturb_gene}_{r.target_gene}"
         if rid in done:
             return
-        ctx = grounding.get(rid, {}).get("context", "")
+        ctx = filter_context(grounding.get(rid, {}).get("context", ""), cfg)
         meaning = LETTER_MEANING[r.letter]
         tmpl = P.prompt_none if r.label == "none" else P.prompt_de
         trace = teacher(tmpl.format(context=ctx, pert=r.perturb_gene,

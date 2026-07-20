@@ -1,0 +1,7 @@
+extends: refine_synthpert_cleanctx_gpt4o_mini
+
+# More expensive refiner. Use for a small audit or targeted hard cases before
+# rewriting a full trace set.
+teacher:
+  model: o4-mini
+  max_tokens: 2400

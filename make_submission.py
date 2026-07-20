@@ -27,10 +27,43 @@ import common
 import modeling
 import paths
 from task import Task
-from train_sft_distill import score_rows
 
 
 SFT_FINAL_ALIASES = {"adapter", "best", "final", "last"}
+
+
+@torch.no_grad()
+def score_rows(model, tokenizer, task, df, letter_ids, gen_max_new, batch_size,
+               verbose=True):
+    """Generate reasoning, then score A/B/C answer logits for submission."""
+    order = task.id_order(letter_ids)
+    tokenizer.padding_side = "left"
+    out = np.zeros((len(df), 3), dtype=np.float32)
+    traces = []
+    rows = list(df.itertuples(index=False))
+    for i in range(0, len(rows), batch_size):
+        chunk = rows[i:i + batch_size]
+        prompts = [task.think_prompt(tokenizer, r.perturb_gene, r.target_gene)
+                   for r in chunk]
+        enc = tokenizer(prompts, return_tensors="pt", padding=True,
+                        add_special_tokens=False).to(model.device)
+        gen = model.generate(**enc, max_new_tokens=gen_max_new, do_sample=False,
+                             pad_token_id=tokenizer.pad_token_id)
+        texts = tokenizer.batch_decode(gen[:, enc["input_ids"].shape[1]:],
+                                       skip_special_tokens=True)
+        reasons = [t.split(task.think_close.strip())[0].strip()[:2500] for t in texts]
+
+        prefixes = [task.answer_prefix(tokenizer, r.perturb_gene, r.target_gene, rs)
+                    for r, rs in zip(chunk, reasons)]
+        enc2 = tokenizer(prefixes, return_tensors="pt", padding=True,
+                         truncation=True, add_special_tokens=False).to(model.device)
+        out[i:i + len(chunk)] = model(**enc2).logits[:, -1, order].float().cpu().numpy()
+        traces.extend(reasons)
+        if verbose:
+            print(f"  scored {min(i+batch_size, len(rows))}/{len(rows)}", end="\r")
+    if verbose:
+        print()
+    return out, traces
 
 
 def _checkpoint_step(path: Path) -> int:
@@ -178,6 +211,7 @@ def create_submission(stage: str, run: str, checkpoint: str, out_arg: str | None
 
     model_cfg = SimpleNamespace(**model_cfg)
     model, tokenizer, backend = modeling.load_model_and_tokenizer(model_cfg)
+    modeling.disable_incompatible_torchao_for_peft()
     model = PeftModel.from_pretrained(model, str(adapter), is_trainable=False)
     letter_ids = task.resolve_letter_ids(tokenizer)
     modeling.prepare_for_inference(model, backend)

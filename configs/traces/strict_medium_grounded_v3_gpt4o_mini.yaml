@@ -1,0 +1,8 @@
+extends: strict_medium_grounded_v3_o4_mini
+
+# Lower-variance, lower-latency fallback. This avoids o-series hidden reasoning
+# budget failures while keeping the same grounded v3 prompt and critic.
+teacher:
+  model: gpt-4o-mini
+  temperature: 0.35
+  max_tokens: 1200

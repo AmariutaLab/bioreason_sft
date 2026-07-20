@@ -74,9 +74,9 @@ class Chat:
                 time.sleep(2 ** attempt)
 
 
-def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg):
+def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg, context=""):
     out = chat(prompt_tmpl.format(pert=pert, gene=gene, meaning=meaning,
-                                  trace=trace),
+                                  trace=trace, context=context),
                cfg.critic.temperature, cfg.critic.max_tokens)
     if not out:
         return 0, "api fail"
@@ -217,7 +217,7 @@ def main():
             return
         if cfg.critic.enabled:
             sc, why = critic_score(critic, P.critic, r.perturb_gene, r.target_gene,
-                                   meaning, trace, cfg)
+                                   meaning, trace, cfg, ctx)
         else:
             sc, why = 5, "critic disabled"
         if sc < cfg.critic.min_score:

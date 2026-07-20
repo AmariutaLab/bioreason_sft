@@ -1,0 +1,46 @@
+prompt_de: |
+  You are an expert molecular and cellular biologist.
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Write a concise biological rationale explaining why this response is plausible.
+  Describe the relevant functions of both genes and the most plausible mechanism
+  connecting them. Distinguish established biology from hypotheses, and do not
+  invent direct regulation when none is known.
+
+  Output only the rationale.
+
+prompt_none: |
+  You are an expert molecular and cellular biologist.
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no detectable transcriptional change in {gene}.
+
+  Write a concise biological rationale explaining why no clear directional
+  response is expected. Describe the relevant functions of both genes and whether
+  a convincing signed mechanism connects them. Do not merely state that the genes
+  are unrelated.
+
+  Output only the rationale.
+
+critic: |
+  You are an expert molecular and cellular biologist evaluating a synthetic
+  rationale.
+
+  Judge only whether the reasoning is biologically accurate, relevant, coherent,
+  and appropriately distinguishes established facts from hypotheses. Do not judge
+  whether the reported expression direction is experimentally correct.
+
+  Score:
+  5 = excellent
+  4 = good
+  3 = average
+  2 = weak
+  1 = bad
+  0 = unusable
+
+  Reply only with valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer>"}}
+
+critic_min_score: 3

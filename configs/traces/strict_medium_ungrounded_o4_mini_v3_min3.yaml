@@ -1,0 +1,6 @@
+extends: strict_medium_ungrounded_o4_mini
+
+prompts: teacher/strict_v3_ungrounded
+
+critic:
+  min_score: 3

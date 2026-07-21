@@ -42,5 +42,3 @@ critic: |
 
   Reply only with valid JSON:
   {{"score": <int>, "reason": "<15 words or fewer>"}}
-
-critic_min_score: 3

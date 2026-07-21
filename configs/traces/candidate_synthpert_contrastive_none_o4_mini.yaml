@@ -1,0 +1,16 @@
+extends: candidate_synthpert_signature_o4_mini
+
+# Full-size none-only alternative to signature candidates. The generator should
+# be called with `--labels none`; this prompt is specialized to contrast why
+# neither up nor down is expected.
+prompts: teacher/synthpert_candidate_contrastive_none
+workers: 2
+
+teacher:
+  model: o4-mini
+  max_tokens: 2800
+
+critic:
+  model: gpt-4o-mini
+  min_score: 4
+  max_tokens: 260

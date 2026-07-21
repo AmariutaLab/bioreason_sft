@@ -14,6 +14,10 @@ Examples:
       --gmt reactome=/path/to/reactome.gmt \
       --gmt msigdb_mouse=/path/to/mouse_hallmark.gmt \
       --out source_coverage_with_gmts
+
+    python analyze_source_coverage.py \
+      --csv-file /path/to/train.csv \
+      --out source_coverage_train
 """
 from __future__ import annotations
 
@@ -80,6 +84,31 @@ def trace_path(args) -> Path:
         return paths.require(paths.traces_jsonl(args.trace_run),
                              f"missing trace run {args.trace_run}")
     raise SystemExit("provide --trace-run or --trace-file")
+
+
+def input_path(args) -> Path:
+    if args.csv_file:
+        return paths.require(Path(args.csv_file), "expected CSV with id,pert,gene")
+    return trace_path(args)
+
+
+def read_rows(args) -> list[dict]:
+    if not args.csv_file:
+        return read_jsonl(trace_path(args))
+    rows = []
+    with paths.require(Path(args.csv_file), "expected CSV").open(newline="") as fh:
+        for rec in csv.DictReader(fh):
+            pert = rec.get("pert") or rec.get("perturb_gene")
+            gene = rec.get("gene") or rec.get("target_gene")
+            if not pert or not gene:
+                continue
+            rows.append({
+                "id": rec.get("id") or f"{pert}_{gene}",
+                "pert": pert.strip(),
+                "gene": gene.strip(),
+                "label": (rec.get("label") or "unknown").strip() or "unknown",
+            })
+    return rows
 
 
 def useful_go_terms(ann: dict) -> list[str]:
@@ -239,26 +268,28 @@ def markdown_report(trace: Path, rows: list[dict], covered: list[dict],
         ("target_has_upstream_tfs", "Target has upstream task TFs"),
         ("shared_regulators", "Pert/target share upstream regulators"),
     ]
+    label_cols = [x for x in ("down", "none", "up") if x in labels]
+    label_cols += [x for x in sorted(labels) if x not in {"down", "none", "up"}]
+    header = "| Signal | All | " + " | ".join(label_cols) + " |"
+    sep = "|---|---:|" + "|".join("---:" for _ in label_cols) + "|"
     lines = [
         "# Source coverage diagnostic",
         "",
-        f"Trace file: `{trace}`",
+        f"Input file: `{trace}`",
         f"Rows: {n}",
         f"Labels: {dict(labels)}",
         "",
         "## Local grounding coverage",
         "",
-        "| Signal | All | down | none | up |",
-        "|---|---:|---:|---:|---:|",
+        header,
+        sep,
     ]
     for key, label in bool_keys:
         vals = summarize_bool(covered, key)
-        lines.append(
-            f"| {label} | {pct(vals.get('all', 0), n)} | "
-            f"{pct(vals.get('down', 0), labels.get('down', 0))} | "
-            f"{pct(vals.get('none', 0), labels.get('none', 0))} | "
-            f"{pct(vals.get('up', 0), labels.get('up', 0))} |"
-        )
+        row_vals = [pct(vals.get("all", 0), n)]
+        row_vals.extend(pct(vals.get(col, 0), labels.get(col, 0))
+                        for col in label_cols)
+        lines.append(f"| {label} | " + " | ".join(row_vals) + " |")
 
     lines += ["", "## Heuristic module frequency", ""]
     for name, count in list(module_counts.items())[:15]:
@@ -298,6 +329,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--trace-run", default=None)
     ap.add_argument("--trace-file", default=None)
+    ap.add_argument("--csv-file", default=None,
+                    help="CSV with id,pert,gene and optional label columns")
     ap.add_argument("--grounding-run", default="default")
     ap.add_argument("--gmt", action="append", default=[],
                     help="optional NAME=/path/source.gmt for source coverage")
@@ -305,8 +338,8 @@ def main():
                     help="output/notes/<out>.md and <out>.json")
     args = ap.parse_args()
 
-    tpath = trace_path(args)
-    rows = read_jsonl(tpath)
+    tpath = input_path(args)
+    rows = read_rows(args)
     grounding = load_grounding(args.grounding_run)
     covered, module_counts = row_coverage(rows, grounding)
     gmt_reports = [gmt_coverage(*parse_named_path(raw), rows) for raw in args.gmt]
@@ -317,7 +350,7 @@ def main():
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text(report)
     out_json.write_text(json.dumps({
-        "trace_file": str(tpath),
+        "input_file": str(tpath),
         "grounding_run": args.grounding_run,
         "rows": len(rows),
         "labels": Counter(r["label"] for r in rows),

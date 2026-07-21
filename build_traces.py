@@ -29,6 +29,7 @@ import paths
 
 LETTER_MEANING = {"A": "UP-REGULATED", "B": "DOWN-REGULATED",
                   "C": "NOT significantly changed"}
+REQUIRED_TEACHER_PROMPTS = ("prompt_de", "prompt_none", "critic")
 
 
 class Chat:
@@ -90,6 +91,24 @@ def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg, context="")
         return 0, "unparseable"
 
 
+def prepare_teacher_prompts(prompts, spec):
+    """Validate required teacher blocks while keeping optional legacy fields."""
+    missing = [k for k in REQUIRED_TEACHER_PROMPTS
+               if not isinstance(prompts.get(k), str) or not prompts.get(k).strip()]
+    if missing:
+        raise SystemExit(f"{spec} missing required prompt field(s): {', '.join(missing)}")
+
+    rules = prompts.get("rules") or ""
+    if not isinstance(rules, str):
+        raise SystemExit(f"{spec} optional prompt field 'rules' must be text")
+
+    leak_patterns = prompts.get("leak_patterns") or []
+    if not isinstance(leak_patterns, list):
+        raise SystemExit(f"{spec} optional prompt field 'leak_patterns' must be a list")
+
+    return rules, leak_patterns
+
+
 def quality_prefilter(trace, pert, gene, cfg):
     """Cheap deterministic QA before spending critic calls.
 
@@ -146,6 +165,7 @@ def main():
     args = ap.parse_args()
     cfg = cfgmod.resolve(args, "traces")
     P = cfgmod.load_prompts(cfg.prompts)
+    rules, leak_patterns = prepare_teacher_prompts(P, cfg.prompts)
     print(f"[prompts] {cfg.prompts}")
 
     key = os.environ.get(cfg.teacher.api_key_env)
@@ -154,13 +174,16 @@ def main():
     teacher = Chat(cfg.teacher.model, cfg.teacher.base_url, key,
                    cfg.teacher.timeout, cfg.teacher.max_retries,
                    cfg.teacher.get("reasoning_effort"))
-    critic = teacher if not cfg.get_path("critic.model") else Chat(
-        cfg.critic.model, cfg.get_path("critic.base_url") or cfg.teacher.base_url,
+    configured_critic_model = cfg.get_path("critic.model")
+    critic_model = (configured_critic_model or cfg.teacher.model) \
+        if cfg.critic.enabled else None
+    critic = teacher if not configured_critic_model else Chat(
+        configured_critic_model, cfg.get_path("critic.base_url") or cfg.teacher.base_url,
         key, cfg.teacher.timeout, cfg.teacher.max_retries,
         cfg.critic.get("reasoning_effort"))
 
-    leak_re = re.compile("|".join(P.leak_patterns), re.I) \
-        if cfg.filters.leak_filter else None
+    leak_re = re.compile("|".join(leak_patterns), re.I) \
+        if cfg.filters.leak_filter and leak_patterns else None
 
     grounding_enabled = bool(cfg.get_path("grounding.enabled", True)) and not args.no_grounding
     grounding_run = cfg.get_path("grounding.run", cfg.get("grounding_run", "default"))
@@ -212,7 +235,9 @@ def main():
                "label": r.label, "letter": r.letter,
                "reason": reason, "trace": trace,
                "critic_score": critic_score, "critic_reason": critic_reason,
+               "critic": critic_model,
                "grounding_enabled": grounding_enabled,
+               "teacher_max_tokens": cfg.teacher.max_tokens,
                "grounding_run": grounding_run if grounding_enabled else None}
         rfh.write(json.dumps(rec) + "\n")
         rfh.flush()
@@ -226,7 +251,7 @@ def main():
         tmpl = P.prompt_none if r.label == "none" else P.prompt_de
         trace = teacher(tmpl.format(context=ctx, pert=r.perturb_gene,
                                     gene=r.target_gene, meaning=meaning,
-                                    rules=P.rules),
+                                    rules=rules),
                         cfg.teacher.temperature, cfg.teacher.max_tokens)
         if not trace or len(trace) < cfg.filters.min_chars:
             with lock:
@@ -258,7 +283,9 @@ def main():
         rec = {"id": rid, "pert": r.perturb_gene, "gene": r.target_gene,
                "label": r.label, "letter": r.letter, "reasoning": trace,
                "critic_score": sc, "critic_reason": why,
-               "teacher": cfg.teacher.model, "prompts": cfg.prompts,
+               "teacher": cfg.teacher.model, "critic": critic_model,
+               "teacher_max_tokens": cfg.teacher.max_tokens,
+               "prompts": cfg.prompts,
                "grounding_enabled": grounding_enabled,
                "grounding_run": grounding_run if grounding_enabled else None}
         with lock:
@@ -292,7 +319,9 @@ def main():
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
     cfgmod.snapshot(cfg, out_dir, {"stats": stats, "attempted": len(rows),
                                    "grounding_enabled": grounding_enabled,
-                                   "grounding_run": grounding_run if grounding_enabled else None})
+                                   "grounding_run": grounding_run if grounding_enabled else None,
+                                   "critic": critic_model,
+                                   "teacher_max_tokens": cfg.teacher.max_tokens})
     print(f"\nWrote {out_file}")
     print("NEXT: read 5-10 traces by hand. Do they reason about SPECIFIC gene "
           "function, or hand-wave about pathways? The former generalizes.")

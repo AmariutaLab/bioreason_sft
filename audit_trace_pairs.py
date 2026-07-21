@@ -160,6 +160,8 @@ def main():
     ap.add_argument("--out", required=True, help="output/trace_audits/<out>/")
     ap.add_argument("--selected-out", default=None,
                     help="optional output/traces/<selected-out>/traces.jsonl")
+    ap.add_argument("--include-unaudited-originals", action="store_true",
+                    help="with --selected-out, append original rows not audited")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--offset", type=int, default=0)
     ap.add_argument("--seed", type=int, default=73)
@@ -212,8 +214,18 @@ def main():
     selected_stats = {"original": 0, "candidate": 0}
     af = audit_file.open("a")
     sf = selected_file.open("a") if selected_file else None
+    selected_ids = set()
+    if selected_file and selected_file.exists():
+        for line in selected_file.read_text().splitlines():
+            if line.strip():
+                try:
+                    selected_ids.add(json.loads(line)["id"])
+                except Exception:
+                    pass
 
     def write_selected(rid, chosen_source, judgment):
+        if rid in selected_ids:
+            return
         row = dict(candidate[rid] if chosen_source == "candidate" else original[rid])
         row.update({
             "pairwise_selected_from": chosen_source,
@@ -225,6 +237,7 @@ def main():
             "pairwise_reason": judgment["reason"],
         })
         sf.write(json.dumps(row) + "\n")
+        selected_ids.add(rid)
 
     def audit_one(rid):
         if rid in done:
@@ -291,6 +304,26 @@ def main():
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         list(ex.map(audit_one, ids))
     af.close()
+    if sf and args.include_unaudited_originals:
+        extra = 0
+        for rid in sorted(original):
+            if rid in selected_ids:
+                continue
+            row = dict(original[rid])
+            row.update({
+                "pairwise_selected_from": "original_unaudited",
+                "pairwise_audit_out": args.out,
+                "pairwise_judge_model": args.model,
+                "pairwise_winner": "not_audited",
+                "pairwise_score_original": None,
+                "pairwise_score_candidate": None,
+                "pairwise_reason": "no candidate or not audited; kept original",
+            })
+            sf.write(json.dumps(row) + "\n")
+            selected_ids.add(rid)
+            extra += 1
+        sf.flush()
+        selected_stats["original_unaudited"] = extra
     if sf:
         sf.close()
 

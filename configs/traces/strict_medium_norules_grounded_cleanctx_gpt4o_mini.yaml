@@ -18,6 +18,8 @@ grounding:
     - '^enzyme binding$'
     - '^identical protein binding$'
     - '^protein-containing complex binding$'
+    - '^cell cycle$'
+    - '^mitotic cell cycle$'
   drop_context_lines:
     - '^REGULATORY EDGE: .*no curated'
     - '^REGULATORY EDGE: none curated'

@@ -1,0 +1,28 @@
+extends: strict_medium_norules_grounded_v2_gpt4o_mini
+
+# Use the existing grounding file, but hide low-recall or distracting context
+# lines from the teacher. Keep gene summaries and direct signed edges.
+grounding:
+  enabled: true
+  drop_go_terms:
+    - '^biological_process$'
+    - '^molecular_function$'
+    - '^cellular_component$'
+    - '^protein binding$'
+    - '^binding$'
+    - '^DNA binding$'
+    - '^RNA binding$'
+    - '^ATP binding$'
+    - '^GTP binding$'
+    - '^catalytic activity$'
+    - '^enzyme binding$'
+    - '^identical protein binding$'
+    - '^protein-containing complex binding$'
+    - '^cell cycle$'
+    - '^mitotic cell cycle$'
+  drop_context_lines:
+    - '^REGULATORY EDGE: .*no curated'
+    - '^REGULATORY EDGE: none curated'
+    - '^Shared upstream regulators:'
+    - '^CURATED REGULON SUMMARY:'
+    - '^TARGET UPSTREAM TF SUMMARY:'

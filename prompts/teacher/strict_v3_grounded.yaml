@@ -1,0 +1,167 @@
+rules: |
+  Write a self-contained biological rationale using the context only as
+  evidence, not as text to cite.
+
+  Hard rules:
+  - Mention both {pert} and {gene} by name.
+  - Briefly describe the relevant molecular function or protein class of each
+    gene when known.
+  - Prefer evidence in this order: signed direct regulatory edge, specific
+    gene summaries, concrete shared regulator logic, then cautious general
+    molecular knowledge.
+  - If the context contains a signed direct edge for the exact pair, propagate
+    the sign explicitly from reduced {pert} to {gene}.
+  - If the context does not contain a signed direct edge, do not claim direct
+    regulation, promoter binding, direct activation, or direct repression.
+  - Shared regulators, GO-like processes, and broad pathway membership are weak
+    evidence. Use them only as uncertainty-qualified support.
+  - Base any indirect mechanism on concrete functions or relationships involving
+    the named genes.
+  - Distinguish known facts from hypotheses: use factual language for established
+    functions and conditional language for uncertain connections.
+  - Do not invent intermediates, feedback, derepression, redundancy, buffering,
+    compensation, or macrophage-specific claims unless the context or common
+    biology supports them.
+  - When a signed mechanism is supported, explain how reducing {pert} changes the
+    relevant process and thereby changes {gene} expression.
+  - If the direction-producing step is not supported, state that limitation
+    instead of inventing one.
+  - Make the rationale transferable by exposing the regulator or protein class,
+    target function, mechanism class, and causal sign when supported.
+  - Begin with biology, not with the response.
+  - Do not merely restate the requested direction.
+  - Do not mention labels, answer choices, supplied answers, FDR, fold-change
+    thresholds, statistical significance, training data, databases,
+    annotations, GO terms, retrieved information, external context, or the
+    provided context.
+  - Do not use "observed", "significant", "correct answer", "provided response",
+    "compensatory", "buffering", or "redundant".
+  - Output only the rationale in 3-4 sentences.
+
+prompt_de: |
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Explain the most plausible forward biological mechanism for this association.
+  Use a signed causal chain only when an exact signed edge or concrete
+  gene-specific mechanism supports the direction.
+
+  If the genes are biologically connected but the direction-producing step is
+  uncertain, describe the most relevant gene-specific mechanism class and state
+  that the sign cannot be derived confidently. Do not force a signed mechanism
+  merely to match the association.
+
+  {rules}
+
+prompt_none: |
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no detectable transcriptional change in {gene}.
+
+  Explain why the known molecular roles of {pert} and {gene} do not provide a
+  strong directional expectation for altered {gene} transcription.
+
+  Use a gene-specific argument based on the absence of a known signed route, an
+  indirect or weak connection, different regulatory levels, or dependence on an
+  unestablished cell state. Do not claim that the genes are unrelated or that an
+  effect is impossible.
+
+  {rules}
+
+critic: |
+  You are filtering biological rationales before they are used as supervised
+  training data. Evaluate the rationale independently using both general
+  molecular knowledge and the context below. Do not infer or reward the intended
+  response direction.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+
+  CONTEXT:
+  {context}
+
+  RATIONALE:
+  {trace}
+
+  Evaluate whether:
+  - both genes are correctly identified and their relevant functions are
+    accurate;
+  - claims are supported by the context or by well-established general biology;
+  - direct edges and intermediates appear known rather than invented;
+  - indirect steps follow from concrete gene functions;
+  - facts are distinguished from hypotheses;
+  - causal and sign logic are internally consistent;
+  - unresolved direction-producing steps are acknowledged;
+  - macrophage-specific claims are appropriately qualified;
+  - the rationale provides reusable biological information rather than generic
+    pathway prose.
+
+  Score 0-5:
+  5 = accurate, specific, concise, and biologically informative; it either gives
+      a credible signed mechanism or clearly explains why no signed mechanism
+      follows; no forbidden or meta-language.
+  4 = useful and mostly specific, but one function, mechanistic step, or
+      uncertainty statement is underspecified.
+  3 = contains useful context, but the connection is weak, partly generic, or
+      the direction is asserted more strongly than the mechanism supports.
+  2 = mostly outcome restatement, generic pathway prose, unsupported shared-
+      regulator/pathway inference, or inadequate discussion of one gene.
+  1 = fabricated regulation, invented intermediates, incorrect gene function,
+      unsupported promoter binding, or a signed story without biological
+      support.
+  0 = label leakage, benchmark or statistical metadata, contradiction, unrelated
+      reasoning, or extensive forbidden language.
+
+  Apply these limits:
+  - If the rationale could apply to hundreds of unrelated gene pairs, score <= 2.
+  - If either gene is misidentified, score <= 1.
+  - If a speculative edge, promoter interaction, or intermediate is presented as
+    established fact, score <= 1.
+  - If shared regulators or broad pathways are used without a concrete gene
+    function, score <= 2.
+  - If an up or down direction is stated without a sign-producing step,
+    score <= 3.
+  - An accurate unresolved rationale may receive 5 if it gives useful functions
+    for both genes and clearly identifies the missing signed link.
+  - Honest uncertainty should score higher than a fabricated mechanism.
+  - If it mentions labels, supplied answers, thresholds, FDR, fold changes,
+    statistical significance, training data, databases, annotations, GO terms,
+    retrieved context, external context, or provided context, score 0.
+  - If it invokes compensation, buffering, or redundancy without naming a
+    concrete biological basis, score <= 1.
+
+  Reply with ONLY valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer, naming the main defect>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome|response)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\bcorrect\s+(?:answer|label|choice)\b'
+  - '\b(?:given|provided|supplied)\s+(?:answer|label|response|outcome)\b'
+  - '\btraining\s+(?:screen|label|response|example|data)\b'
+  - '\bbenchmark\s+threshold\b'
+  - '\bFDR\b'
+  - '\bfalse\s+discovery\s+rate\b'
+  - '\blog2\s*(?:fold\s*change|FC)\b'
+  - '\blog2FC\b'
+  - '\bstatistically\s+significant\b'
+  - '\bsignificant(?:ly)?\s+(?:increased|decreased|changed|upregulated|downregulated)\b'
+  - '\bobserved\s+(?:increase|decrease|effect|response|change)\b'
+  - '\bcompensat\w*\b'
+  - '\bbuffer(?:ing|ed|s)?\b'
+  - '\bredundan(?:cy|t)\b'
+  - '\bthe\s+provided\s+context\b'
+  - '\bprovided\s+context\b'
+  - '\bretrieved\s+(?:context|evidence|information)\b'
+  - '\bexternal\s+context\b'
+  - '\bdatabase(?:s)?\b'
+  - '\bannotation(?:s)?\b'
+  - '\bGO\s+terms?\b'

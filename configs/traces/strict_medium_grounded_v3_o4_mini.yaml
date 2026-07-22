@@ -1,0 +1,35 @@
+extends: strict_medium
+
+# Grounded analogue of strict_medium_ungrounded_o4_mini, using the stronger v3
+# prompt/rubric plus retrieved gene summaries and CollecTRI context.
+prompts: teacher/strict_v3_grounded
+
+teacher:
+  model: o4-mini
+  max_tokens: 2400
+
+critic:
+  model: gpt-4o-mini
+  min_score: 4
+  max_tokens: 250
+
+filters:
+  min_chars: 180
+  reject_patterns:
+    - '\bmay affect\b'
+    - '\bcould lead to\b'
+    - '\bvarious transcription factors\b'
+    - '\bvarious signaling pathways\b'
+    - '\bcellular stress signals\b'
+    - '\bcompensatory response\b'
+    - '\bcompensatory mechanism\b'
+    - '\bhomeostasis\b'
+    - '\bdownstream effects\b'
+    - '\bsignificant(?:ly)?\b'
+    - '\bobserved\b'
+    - '\bstrong enough\b'
+    - '\bprovided context\b'
+    - '\bretrieved context\b'
+    - '\bdatabase(?:s)?\b'
+    - '\bannotation(?:s)?\b'
+    - '\bGO terms?\b'

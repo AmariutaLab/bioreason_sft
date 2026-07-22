@@ -1,0 +1,7 @@
+extends: strict_medium_norules_grounded_cleanctx_gpt4o_mini
+
+# Stronger teacher using the same cleaned context. Use only for smoke testing
+# or hard-case routing until API budget is clear.
+teacher:
+  model: o4-mini
+  max_tokens: 2400

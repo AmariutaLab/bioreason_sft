@@ -1,0 +1,34 @@
+extends: strict_medium
+
+# Stricter version of the collaborator-requested grounded norules experiment.
+# Goal: keep SynthPert-like reasoning while rejecting vague/context-leaky traces.
+grounding:
+  enabled: true
+
+prompts: teacher/norules_grounded_v2
+
+teacher:
+  model: gpt-4o-mini
+  temperature: 0.45
+  max_tokens: 2400
+
+critic:
+  model: gpt-4o-mini
+  min_score: 4
+  max_tokens: 240
+
+filters:
+  min_chars: 180
+  require_gene_mentions: true
+  reject_patterns:
+    - '\bprovided context\b'
+    - '\bretrieved context\b'
+    - '\bexternal context\b'
+    - '\bcontext\s+(?:shows|suggests|states|indicates|provides)\b'
+    - '\bdatabase(?:s)?\b'
+    - '\bannotation(?:s)?\b'
+    - '\bGO terms?\b'
+    - '\bstatistical(?:ly)?\b'
+    - '\bsignificant(?:ly)?\b'
+    - '\bobserved\s+(?:increase|decrease|effect|response|change|upregulation|downregulation)\b'
+

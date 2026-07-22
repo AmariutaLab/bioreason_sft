@@ -1,0 +1,87 @@
+rules: |
+  Use the context as background biological hints only. Do not cite or mention
+  the context, databases, annotations, GO terms, labels, answer choices,
+  thresholds, FDR, fold changes, training data, or the benchmark.
+
+  Distinguish established biology from hypotheses. Do not invent direct
+  regulation when none is known.
+
+  Output only the rationale.
+
+prompt_de: |
+  You are an expert molecular and cellular biologist.
+
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with {meaning} expression of {gene}.
+
+  Write a concise biological rationale explaining why this response is plausible.
+  Describe the relevant functions of both genes and the most plausible mechanism
+  connecting them. If the context suggests useful gene functions, regulators, or
+  pathway memberships, use them as factual anchors without naming the source.
+
+  {rules}
+
+prompt_none: |
+  You are an expert molecular and cellular biologist.
+
+  Context available to the teacher:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no detectable transcriptional change in {gene}.
+
+  Write a concise biological rationale explaining why no clear directional
+  response is expected. Describe the relevant functions of both genes and whether
+  a convincing signed mechanism connects them. Do not merely state that the genes
+  are unrelated. If the context suggests useful gene functions, regulators, or
+  pathway memberships, use them as factual anchors without naming the source.
+
+  {rules}
+
+critic: |
+  You are an expert molecular and cellular biologist evaluating a synthetic
+  rationale.
+
+  Judge only whether the reasoning is biologically accurate, relevant, coherent,
+  and appropriately distinguishes established facts from hypotheses. Do not judge
+  whether the reported expression direction is experimentally correct.
+
+  Score:
+  5 = excellent
+  4 = good
+  3 = average
+  2 = weak
+  1 = bad
+  0 = unusable
+
+  Reply only with valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer>"}}
+
+leak_patterns:
+  - '\bgiven\s+(?:that|the)\s+(?:the\s+)?(?:answer|label|outcome|result|ground.?truth|conclusion)'
+  - '\b(?:the|this)\s+(?:answer|label|outcome|response)\s+(?:is|was)\s+(?:given|provided|known|stated)'
+  - '\bwe\s+(?:are told|know|were told)\s+that\b'
+  - '\b(?:since|because|as)\s+(?:the\s+)?(?:correct\s+)?(?:answer|choice|label|outcome)\s+(?:is|was)\b'
+  - '\bground.?truth\b'
+  - '\bcorrect\s+(?:answer|label|choice)\b'
+  - '\b(?:given|provided|supplied)\s+(?:answer|label|response|outcome)\b'
+  - '\btraining\s+(?:screen|label|response|example|data)\b'
+  - '\bbenchmark\s+threshold\b'
+  - '\bbenchmark\b'
+  - '\bFDR\b'
+  - '\bfalse\s+discovery\s+rate\b'
+  - '\blog2\s*(?:fold\s*change|FC)\b'
+  - '\blog2FC\b'
+  - '\bstatistically\s+significant\b'
+  - '\bsignificant(?:ly)?\s+(?:increased|decreased|changed|upregulated|downregulated)\b'
+  - '\bobserved\s+(?:increase|decrease|effect|response|change)\b'
+  - '\bthe\s+provided\s+context\b'
+  - '\bprovided\s+context\b'
+  - '\bretrieved\s+(?:context|evidence|information)\b'
+  - '\bexternal\s+context\b'
+  - '\bdatabase(?:s)?\b'
+  - '\bannotation(?:s)?\b'
+  - '\bGO\s+terms?\b'

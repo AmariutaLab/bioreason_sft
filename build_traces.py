@@ -19,6 +19,7 @@ import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -75,9 +76,9 @@ class Chat:
                 time.sleep(2 ** attempt)
 
 
-def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg):
+def critic_score(chat, prompt_tmpl, pert, gene, meaning, trace, cfg, context=""):
     out = chat(prompt_tmpl.format(pert=pert, gene=gene, meaning=meaning,
-                                  trace=trace),
+                                  trace=trace, context=context),
                cfg.critic.temperature, cfg.critic.max_tokens)
     if not out:
         return 0, "api fail"
@@ -126,14 +127,95 @@ def quality_prefilter(trace, pert, gene, cfg):
     return True, ""
 
 
+def filter_context(ctx, cfg):
+    """Optionally drop low-value context lines before teacher prompting."""
+    line_pats = cfg.get_path("grounding.drop_context_lines", []) or []
+    part_pats = cfg.get_path("grounding.drop_context_parts", []) or []
+    go_term_pats = cfg.get_path("grounding.drop_go_terms", []) or []
+    if not ctx or (not line_pats and not part_pats and not go_term_pats):
+        return ctx
+    kept = []
+    for line in ctx.splitlines():
+        if any(re.search(pat, line, re.I) for pat in line_pats):
+            continue
+        if go_term_pats and "| GO:" in line:
+            prefix, _, terms = line.partition("| GO:")
+            kept_terms = []
+            for term in terms.split(";"):
+                term = term.strip()
+                if term and not any(re.search(pat, term, re.I)
+                                    for pat in go_term_pats):
+                    kept_terms.append(term)
+            line = prefix.rstrip()
+            if kept_terms:
+                line = f"{line} | GO: {'; '.join(kept_terms)}"
+        for pat in part_pats:
+            line = re.sub(pat, "", line, flags=re.I).rstrip()
+        if not line:
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def load_extend_traces(files, min_critic_score=4):
+    """Load reusable accepted traces by id.
+
+    This deliberately refuses reject records. A previous run may have combined
+    traces.jsonl and rejects.jsonl into one JSONL; reject rows can carry nonempty
+    `trace` text, but they are not acceptable SFT targets.
+    """
+    out = {}
+    if not files:
+        return out
+    skipped = 0
+    for raw in files:
+        p = paths.require(Path(raw).expanduser(),
+                          f"--extend-traces expected a JSONL file: {raw}")
+        for line in p.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                skipped += 1
+                continue
+            rid = rec.get("id")
+            reasoning = str(rec.get("reasoning") or "").strip()
+            if rec.get("reason") or not rid or not reasoning:
+                skipped += 1
+                continue
+            if min_critic_score is not None:
+                try:
+                    if int(rec.get("critic_score")) < min_critic_score:
+                        skipped += 1
+                        continue
+                except (TypeError, ValueError):
+                    skipped += 1
+                    continue
+            out[str(rid)] = rec
+    print(f"[extend] loaded {len(out)} accepted reusable traces"
+          + (f" ({skipped} skipped)" if skipped else ""))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, help="traces run name")
     ap.add_argument("--no-grounding", action="store_true",
                     help="do not load or inject grounding context into teacher prompts")
+    ap.add_argument("--no-val", "--noval", dest="no_val", action="store_true",
+                    help="use the full train CSV and do not reserve a blocked val split")
+    ap.add_argument("--extend-traces", action="append", default=[],
+                    help="copy accepted traces from this JSONL before API calls; may repeat")
+    ap.add_argument("--extend-min-critic-score", type=int, default=4,
+                    help="minimum critic_score for copied traces; use -1 to disable")
+    ap.add_argument("--max-tokens", type=int, default=None,
+                    help="override teacher.max_tokens for this run")
     cfgmod.add_config_args(ap, "traces")
     args = ap.parse_args()
     cfg = cfgmod.resolve(args, "traces")
+    if args.max_tokens is not None:
+        cfg["teacher"]["max_tokens"] = args.max_tokens
     P = cfgmod.load_prompts(cfg.prompts)
     rules, leak_patterns = prepare_teacher_prompts(P, cfg.prompts)
     print(f"[prompts] {cfg.prompts}")
@@ -167,7 +249,12 @@ def main():
         print("[grounding] disabled; teacher sees no retrieved context")
 
     train, _ = common.load_data()
-    tr, va = common.split_from_cfg(train, cfg)     # SAME split as the trainers
+    if args.no_val:
+        tr = train.copy()
+        va = train.iloc[0:0].copy()
+        print(f"[split] no-val: train={len(tr)} val=0 discarded=0")
+    else:
+        tr, va = common.split_from_cfg(train, cfg)     # SAME split as the trainers
 
     # Balanced sampling: 'none' is 55%, 'down' only 14%. Proportional sampling
     # wastes teacher budget on the easy majority and starves 'down'.
@@ -193,9 +280,12 @@ def main():
             except Exception:
                 pass
         print(f"Resuming: {len(done)} traces already written")
+    extend_min = None if args.extend_min_critic_score < 0 else args.extend_min_critic_score
+    extend = load_extend_traces(args.extend_traces, extend_min)
 
     lock = threading.Lock()
-    stats = {"kept": 0, "leak": 0, "prefilter": 0, "lowscore": 0, "fail": 0}
+    stats = {"kept": 0, "copied": 0, "leak": 0, "prefilter": 0,
+             "lowscore": 0, "fail": 0}
     fh = out_file.open("a")
     rfh = reject_file.open("a")
 
@@ -205,7 +295,8 @@ def main():
                "label": r.label, "letter": r.letter,
                "reason": reason, "trace": trace,
                "critic_score": critic_score, "critic_reason": critic_reason,
-               "critic": critic_model,
+               "teacher": cfg.teacher.model, "critic": critic_model,
+               "prompts": cfg.prompts,
                "grounding_enabled": grounding_enabled,
                "teacher_max_tokens": cfg.teacher.max_tokens,
                "grounding_run": grounding_run if grounding_enabled else None}
@@ -214,9 +305,23 @@ def main():
 
     def work(r):
         rid = f"{r.perturb_gene}_{r.target_gene}"
-        if rid in done:
-            return
-        ctx = grounding.get(rid, {}).get("context", "")
+        with lock:
+            if rid in done:
+                return
+            reusable = extend.get(rid)
+            if reusable is not None:
+                fh.write(json.dumps(reusable) + "\n")
+                fh.flush()
+                done.add(rid)
+                stats["copied"] += 1
+                n = sum(stats.values())
+                if n % 25 == 0:
+                    print(f"  {n}/{len(rows)} kept={stats['kept']} "
+                          f"copied={stats['copied']} leak={stats['leak']} "
+                          f"prefilter={stats['prefilter']} low={stats['lowscore']} "
+                          f"fail={stats['fail']}")
+                return
+        ctx = filter_context(grounding.get(rid, {}).get("context", ""), cfg)
         meaning = LETTER_MEANING[r.letter]
         tmpl = P.prompt_none if r.label == "none" else P.prompt_de
         trace = teacher(tmpl.format(context=ctx, pert=r.perturb_gene,
@@ -242,7 +347,7 @@ def main():
             return
         if cfg.critic.enabled:
             sc, why = critic_score(critic, P.critic, r.perturb_gene, r.target_gene,
-                                   meaning, trace, cfg)
+                                   meaning, trace, cfg, ctx)
         else:
             sc, why = 5, "critic disabled"
         if sc < cfg.critic.min_score:
@@ -261,10 +366,12 @@ def main():
         with lock:
             fh.write(json.dumps(rec) + "\n")
             fh.flush()
+            done.add(rid)
             stats["kept"] += 1
             n = sum(stats.values())
             if n % 25 == 0:
-                print(f"  {n}/{len(rows)} kept={stats['kept']} leak={stats['leak']} "
+                print(f"  {n}/{len(rows)} kept={stats['kept']} "
+                      f"copied={stats['copied']} leak={stats['leak']} "
                       f"prefilter={stats['prefilter']} low={stats['lowscore']} "
                       f"fail={stats['fail']}")
 
@@ -273,8 +380,11 @@ def main():
     fh.close()
     rfh.close()
 
-    total = max(1, sum(stats.values()))
-    print(f"\nkept={stats['kept']} leak={stats['leak']} "
+    total = max(1, stats["kept"] + stats["leak"] + stats["prefilter"]
+                + stats["lowscore"] + stats["fail"])
+    output_total = stats["kept"] + stats["copied"]
+    print(f"\nkept={stats['kept']} copied={stats['copied']} output={output_total} "
+          f"leak={stats['leak']} "
           f"prefilter={stats['prefilter']} lowscore={stats['lowscore']} "
           f"fail={stats['fail']}  (keep rate {100*stats['kept']/total:.1f}%)")
     print("SynthPert kept ~2% after filtering and still beat full-data training — "
@@ -288,6 +398,11 @@ def main():
 
     (out_dir / "stats.json").write_text(json.dumps(stats, indent=2))
     cfgmod.snapshot(cfg, out_dir, {"stats": stats, "attempted": len(rows),
+                                   "no_val": bool(args.no_val),
+                                   "extend_traces": args.extend_traces,
+                                   "extend_min_critic_score": extend_min,
+                                   "extended_available": len(extend),
+                                   "extended_copied": stats["copied"],
                                    "grounding_enabled": grounding_enabled,
                                    "grounding_run": grounding_run if grounding_enabled else None,
                                    "critic": critic_model,

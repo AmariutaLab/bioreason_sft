@@ -1,0 +1,104 @@
+extends: synthpert_candidate_signature
+
+rules: |
+  Generate a fresh no-change rationale. Do not paraphrase any prior rationale,
+  and do not mention that this is a candidate.
+
+  Use context as private biological hints only. The program-signature hints are
+  weak neighborhood summaries, not proof. Use them to choose plausible cellular
+  modules, but do not cite them, do not list neighbor genes as evidence, and do
+  not mention training data, labels, signatures, context, databases,
+  annotations, GO terms, observed effects, thresholds, FDR, fold changes, or
+  benchmark data.
+
+  Write in the style of a strong SynthPert rationale:
+  - One compact paragraph, 5-8 sentences.
+  - State concrete established biology for {pert}.
+  - State the main regulatory axis, compartment, or cellular program controlling
+    {gene}.
+  - Explain why {pert} knockdown does not activate a plausible up-regulating
+    route for {gene}.
+  - Explain why {pert} knockdown does not remove a plausible positive input or
+    create a plausible repressive route for {gene}.
+  - End with a specific no-change conclusion based on pathway, compartment,
+    regulatory-level, cell-state, redundancy, or buffering separation.
+  - Mark indirect bridges as hypotheses.
+  - Prefer canonical modules when relevant: IFN/JAK/STAT/IRF, TLR/MyD88/IRAK/
+    TRAF/NF-kB/AP-1, TNF/NF-kB/MAPK, mTOR/TFEB, ISR/ATF4, p53/nucleolar stress,
+    mitochondrial stress, spliceosome/RNA export, ribosome biogenesis,
+    proteostasis/chaperone systems, vesicle trafficking, chromatin remodeling,
+    macrophage lineage factors PU.1/IRF8/CIITA.
+  - Do not invent direct regulation, promoter binding, named response elements,
+    or macrophage specificity unless well supported.
+  - Do not rely on the phrase "no known direct regulation" unless you also give
+    the specific biology that separates the two genes.
+
+  Output only the rationale.
+
+prompt_none: |
+  You are an expert molecular and cellular biologist analyzing gene regulation
+  after CRISPRi knockdown.
+
+  Private context:
+  {context}
+
+  In mouse bone marrow-derived macrophages, CRISPRi reduction of {pert} is
+  associated with no clear directional transcriptional effect on {gene}.
+
+  Write a fresh contrastive rationale for why neither up-regulation nor
+  down-regulation of {gene} is mechanistically expected after {pert} knockdown.
+
+  {rules}
+
+critic: |
+  You are an expert molecular and cellular biologist evaluating a synthetic
+  no-change rationale for supervised fine-tuning.
+
+  Judge whether the rationale is biologically accurate, specific, compact,
+  coherent, and useful as mechanistic training data. Do not judge whether the
+  requested expression direction is experimentally correct.
+
+  Perturbed gene: {pert}
+  Target gene: {gene}
+  Requested association: {meaning}
+
+  Private context:
+  {context}
+
+  Rationale:
+  {trace}
+
+  Score 0-5:
+  5 = excellent: accurate functions for both genes, names the target's main
+      regulatory axis/program, and gives a specific contrastive explanation for
+      why neither an activating nor repressing route is expected.
+  4 = good: gene-specific and useful, with one clear no-change mechanism and at
+      most one cautious indirect bridge.
+  3 = marginal: real functions are present, but the no-change bridge is broad,
+      incomplete, or only partly contrastive.
+  2 = weak: generic stress/homeostasis/pathway language, only one gene is
+      specific, or the rationale mostly says there is no direct regulation.
+  1 = bad: incorrect gene identity/function, invented direct regulation,
+      unsupported promoter binding, or unsupported named intermediates stated as
+      fact.
+  0 = unusable: source/statistical leakage, answer-choice wording,
+      contradiction, or rationale unrelated to the requested genes.
+
+  Apply these limits:
+  - If either gene's function is missing, wrong, or vague, score <= 2.
+  - If the target's normal regulatory axis/program is missing, score <= 3.
+  - If it does not explain why both up- and down-regulating routes are weak or
+    absent, score <= 3.
+  - If it only says "no known direct regulation" without specific functional
+    separation, score <= 2.
+  - If a direct edge, promoter interaction, named response element, or named
+    intermediate is invented as fact, score <= 1.
+  - If the rationale cites or mentions context, databases, annotations, GO,
+    labels, answer choices, thresholds, FDR, fold changes, training data,
+    benchmark data, observed effects, statistical significance, signatures, or
+    neighbor genes as evidence, score 0.
+  - Speculative bridges can score 4 only when the factual anchors are concrete
+    and uncertainty is explicitly calibrated.
+
+  Reply only with valid JSON:
+  {{"score": <int>, "reason": "<15 words or fewer>"}}

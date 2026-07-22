@@ -1,0 +1,7 @@
+extends: strict_medium_synthpert_grounded_o4_mini
+
+# Lower-latency fallback using the same SynthPert-style grounded prompt.
+teacher:
+  model: gpt-4o-mini
+  temperature: 0.45
+  max_tokens: 1400

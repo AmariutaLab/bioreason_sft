@@ -1,0 +1,8 @@
+extends: candidate_synthpert_signature_o4_mini
+
+# Cheaper diagnostic version. Use only for prompt debugging; o4-mini is the
+# serious candidate generator.
+teacher:
+  model: gpt-4o-mini
+  temperature: 0.45
+  max_tokens: 2200

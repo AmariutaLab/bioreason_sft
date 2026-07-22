@@ -1,0 +1,26 @@
+extends: strict_medium
+
+# SynthPert-style grounded traces: looser biological mechanism space than
+# strict_v3, but still filters source/label leakage and unsupported direct edges.
+prompts: teacher/synthpert_grounded
+
+teacher:
+  model: o4-mini
+  max_tokens: 2600
+
+critic:
+  model: gpt-4o-mini
+  min_score: 3
+  max_tokens: 250
+
+filters:
+  min_chars: 220
+  require_gene_mentions: true
+  reject_patterns:
+    - '\bprovided context\b'
+    - '\bretrieved context\b'
+    - '\bdatabase(?:s)?\b'
+    - '\bannotation(?:s)?\b'
+    - '\bGO terms?\b'
+    - '\bsignificant(?:ly)?\s+(?:increased|decreased|changed|upregulated|downregulated)\b'
+    - '\bobserved\s+(?:increase|decrease|effect|response|change)\b'

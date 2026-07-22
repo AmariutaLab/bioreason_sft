@@ -1,0 +1,7 @@
+extends: strict_medium_norules_grounded_gpt4o_mini
+
+# Stronger teacher for a targeted hard-case pass after the cheap grounded
+# gpt-4o-mini run has been compared with the ungrounded o4-mini run.
+teacher:
+  model: o4-mini
+  max_tokens: 2400
